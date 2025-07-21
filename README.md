@@ -6,26 +6,32 @@ Auto Tool Router inspired and based on Auto-Tool v2 by mhwhgm.
 Standard OpenWebUI models are passive, requiring manual tool selection and often providing weak search results. This project solves that by introducing an intelligent, two-layer router that automates tool use for web search, image generation, and code execution. It gives your local models the autonomous capabilities of leading AI services like ChatGPT and Gemini, making them proactive and far more powerful.
 
 ### Quick Navigation
-*   [Overview](#2-overview)
+*   [Features](#2-overview)
 *   [Valves and Model Configuration](#3-configuration-guide-valves--model-selection)
 *   [Installation & Setup](#4-setup--usage)
 *   [Frequently Asked Questions](#5-faq)
 
 
----
 ## 2. Overview
-This suite is built around a two-part system that works in tandem: the **Auto Tool Selector** and the **Exa Search Router**. The Auto Tool Selector acts as the central "brain" or master router, analyzing every user prompt to make an initial decision. The Exa Search Router is a highly specialized research agent that the master router can call upon when it determines a web search is necessary.
+This suite works using a master router (`Auto Tool Selector`) that intercepts every user prompt. It analyzes the request (including any images) and decides on the best action:
 
-The core philosophy of this suite is best understood by following the flow of a user's request. When a user submits a prompt, it is first intercepted by the **Auto Tool Selector**. This router analyzes the prompt's text and any included images to determine the user's intent. If it decides a specialized task is required (like searching the web or generating an image), it forwards the request to the appropriate tool. If no special tool is needed, the prompt is passed directly to the main chat model. This ensures that simple questions get fast answers, while complex tasks are handled by the most capable agent for the job.
+*   **Chat:** If it's a simple query, it's passed directly to the main model for a fast answer.
+*   **Delegate:** If it's a complex task, it's forwarded to a specialized tool for image generation, code execution, or advanced web research via the `Exa Search Router`.
 
 #### Summary of Key Features
-* **Intelligent, Multi-Layered Routing:** The system uses a "chain-of-thought" process at multiple levels, first to select the right tool, and then again within the search tool to select the right research strategy.
-* **Dynamic, Multi-Modal Understanding:** Natively handles both text and image-based queries, automatically getting context from images to inform its decisions.
-* **Multi-Strategy Research Agent:** The web search tool isn't one-size-fits-all. It dynamically chooses between several modes based on the user's needs: `CRAWL` for reading a specific webpage, `STANDARD` for fast, factual lookups, or `COMPLETE` for deep, iterative research dives.
-* **Enhanced Image Generation:** The image tool goes beyond simple generation by using a helper model to refine user ideas into more effective prompts, ensuring higher-quality and more relevant visual outputs.
-* **Jupyter-Ready Code Interpreter:** Features a code interpreter designed to integrate seamlessly with a Jupyter Notebook environment for complex data analysis and code execution, while still functioning for simpler tasks without it.
-* **Robust & Resilient Execution:** Built-in retry mechanisms and graceful failure logic ensure the system is reliable and provides the best possible output even when external services have temporary issues.
-* **Transparent User Experience:** Provides clear, dynamic status updates to the user, showing them exactly what the tool is doing at every step of the process.
+
+*   **Autonomous Tool Delegation:** Intelligently analyzes user intent to automatically call the right tool for the job—be it the code interpreter, image generator, or the advanced web search agent. No manual selection required.
+
+*   **Multi-Strategy Web Search:** Powered by Exa.ai, the search tool dynamically selects one of three powerful modes:
+    *   **Crawl:** Directly reads and processes a specific URL.
+    *   **Quick:** Delivers fast, factual answers by summarizing top sources, often in under 5 seconds.
+    *   **Complete:** Executes a multi-step, agentic research process that synthesizes information from a wide range of sources for deep, comprehensive reports.
+
+*   **Enhanced Image Generation:** Automatically improves user prompts to generate higher-quality, more relevant visuals. The system also feeds visual context back to the chat model, enabling seamless compatibility with tools like GPT-Image-1.
+
+*   **Jupyter-Ready Code Interpreter:** Offers deep integration with **Jupyter** for complex data analysis and convenient file returns, while still fully supporting the default OpenWebUI code interpreter.
+
+*   **Transparent Operation:** Provides clear, real-time status updates so you're never left guessing what the tool is doing.
 ---
 ## 3. Configuration Guide: Valves & Model Selection
 This suite is designed to be highly configurable through a system called `Valves`. Each tool has its own set of valves that allow you to fine-tune its behavior, balancing cost, speed, and intelligence.

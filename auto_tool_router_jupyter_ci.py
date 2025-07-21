@@ -1,7 +1,9 @@
 """
-Title: Auto Tool Selector (Consolidated)
+Title: Auto Tool Selector 
 Description: A hybrid middleware that dynamically routes to all tools, applying special handling where needed.
-Version: 8.2.0 - Fixed conversation state bug after tool calls
+author: ShaoRou459
+author_url: https://github.com/ShaoRou459
+Version: 1.0.0
 """
 
 from __future__ import annotations

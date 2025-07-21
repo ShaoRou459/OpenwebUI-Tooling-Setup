@@ -1,5 +1,7 @@
 # OpenWebUI Tooling Suite Documentation
 
+Auto Tool Router inspired and based on Auto-Tool v2 by mhwhgm.
+
 ## 1. Backstory and Purpose
 Standard OpenWebUI models are passive, requiring manual tool selection and often providing weak search results. This project solves that by introducing an intelligent, two-layer router that automates tool use for web search, image generation, and code execution. It gives your local models the autonomous capabilities of leading AI services like ChatGPT and Gemini, making them proactive and far more powerful.
 

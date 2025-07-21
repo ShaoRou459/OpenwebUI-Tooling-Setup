@@ -1,8 +1,9 @@
 """
 Title: Search Router Tool
 Description: An advanced research tool with a robust retry and graceful failure mechanism.
-Version: 26.1.0 (Router Context Patch)
-License: MIT
+author: ShaoRou459
+author_url: https://github.com/ShaoRou459
+Version: 1.0.0
 Requirements: exa_py, open_webui
 """
 

@@ -32,6 +32,11 @@ This suite works using a master router (`Auto Tool Selector`) that intercepts ev
 *   **Jupyter-Ready Code Interpreter:** Offers deep integration with **Jupyter** for complex data analysis and convenient file returns, while still fully supporting the default OpenWebUI code interpreter.
 
 *   **Transparent Operation:** Provides clear, real-time status updates so you're never left guessing what the tool is doing.
+
+## Demo:
+
+https://github.com/user-attachments/assets/696cb316-c160-4210-a0dc-f87a04be1647
+
 ---
 ## 3. Configuration Guide: Valves & Model Selection
 This suite is designed to be highly configurable through a system called `Valves`. Each tool has its own set of valves that allow you to fine-tune its behavior, balancing cost, speed, and intelligence.

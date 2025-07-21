@@ -9,6 +9,7 @@ Standard OpenWebUI models are passive, requiring manual tool selection and often
 *   [Installation & Setup](#4-setup--usage)
 *   [Frequently Asked Questions](#5-faq)
 
+
 ---
 ## 2. Overview
 This suite is built around a two-part system that works in tandem: the **Auto Tool Selector** and the **Exa Search Router**. The Auto Tool Selector acts as the central "brain" or master router, analyzing every user prompt to make an initial decision. The Exa Search Router is a highly specialized research agent that the master router can call upon when it determines a web search is necessary.
@@ -114,6 +115,9 @@ OpenWebUI's tool interface does not automatically install Python libraries. The 
 **What's the difference between a "Function" and a "Tool" in the setup?**
 * **Function (Filter):** This runs _before_ the main chat model to intercept and reroute the user's prompt. Our `Auto Tool Selector` is a Function.
 * **Tool:** This is a standard tool the model can call _after_ receiving the prompt. Our `Exa Search Router` is a Tool called by the master router.
+
+## 6. Diagram
+<img width="6663" height="4095" alt="Drawing 2025-07-14 17 48 55 excalidraw" src="https://github.com/user-attachments/assets/e79f7658-020f-4804-8d16-e4414ad781e8" />
 
 **Why doesn't the `COMPLETE` search run for my complex questions?**
 The `COMPLETE` search mode is resource-intensive and is triggered only when your prompt explicitly contains a phrase like "deep research." For all other queries, the system uses the faster `STANDARD` search to balance performance and thoroughness.

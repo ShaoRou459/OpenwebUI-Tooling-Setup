@@ -104,8 +104,8 @@ Run the following commands on the machine hosting your Docker instance:
 
 #### **Step 3: Add and Configure the Routers**
 1.  **Choose the Correct Master Router File:**
-    *   For the **default** OpenWebUI code interpreter, use `auto_tool_router_default_code_interpter.py`.
-    *   For a **Jupyter** backend, use `auto_tool_router_jupyter_ci.py`.
+    *   For the **default** OpenWebUI code interpreter, use `auto_tool_selector_default_code_interpter.py`.
+    *   For a **Jupyter** backend, use `auto_tool_selector_jupyter_ci.py`.
 
 2.  **Add the Tools in the Admin Panel:**
     *   **Create the Function (Master Router):** Navigate to `Admin Settings > Functions > New Function`. Paste the code from your chosen `Auto Tool Selector` file here.

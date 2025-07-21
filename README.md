@@ -1,4 +1,4 @@
-# OpenWebUI Advanced Tooling Suite Documentation
+# OpenWebUI Tooling Suite Documentation
 
 ## 1. Backstory and Purpose
 

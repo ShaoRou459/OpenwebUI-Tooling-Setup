@@ -43,9 +43,6 @@ This suite is designed to be highly configurable through a system called `Valves
 * **`vision_model`**:
     * **Purpose:** Specifies the model used to analyze images and generate text descriptions.
     * **Recommendation:** A high-quality and fast multi-modal model is required. **`GPT 4.1`** or **`Gemini 2.5 Flash`** are recommended.
-* **`vision_injection_models`**:
-    * **Purpose:** A list of non-vision model IDs that should receive the AI-generated image description. This gives "sight" to powerful text-only models.
-    * **Example:** `["Llama3-70B", "Claude-3-Opus"]`
 * **`history_char_limit`**:
     * **Purpose:** Sets the maximum number of characters for each message included in the conversation history snippet sent to the router. This helps keep the context concise and within token limits.
 

@@ -5,7 +5,7 @@ Standard OpenWebUI models are passive, requiring manual tool selection and often
 
 ### Quick Navigation
 *   [Overview](#2-overview)
-*   [Valves Configuration](#3-configuration-guide-valves--model-selection)
+*   [Valves and Model Configuration](#3-configuration-guide-valves--model-selection)
 *   [Installation & Setup](#4-setup--usage)
 *   [Frequently Asked Questions](#5-faq)
 

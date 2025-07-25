@@ -1,5 +1,5 @@
 # OpenWebUI Tooling Suite Documentation  
-[中文 Readme](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/blob/main/README_zh.md)
+[中文 Readme](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/blob/main/README_zh.md) | Skip to [Installation & Usage](#4-installation--usage)
 
 ---
 

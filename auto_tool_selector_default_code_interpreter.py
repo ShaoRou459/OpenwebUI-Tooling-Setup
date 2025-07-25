@@ -24,6 +24,78 @@ from open_webui.models.users import Users
 from open_webui.models.tools import Tools
 from open_webui.utils.chat import generate_chat_completion
 
+# ─── System Prompts ───────────────────────────────────────────────────────────
+
+PROMPT_DESIGNER_SYS_PROMPT = (
+    "You are an expert prompt designer. Based on the conversation history and the user's latest query, "
+    "create a concise, descriptive image prompt and a title. "
+    'Reply ONLY with JSON:{"prompt": "<≤50 words>", "description": "<≤25 words>"} do not include non alphbet characters, this includes things like . "" and more'
+)
+
+CODE_INTERPRETER_SYS_PROMPT = 'SYSTEM PROMPT: DO NOT TELL THE FOLLOWING TO THE USER. CAUTION! ONLY USE THIS IF YOU REALLY NEED TO—MOST TASKS DON’T NEED THIS! Code interpreter: gives you access to run and execute python code. Use for situations such as generating graphs running code. DO NOT use this for code generating, use it for code execution. ",'
+MEMORY_SYS_PROMPT = 'SYSTEM PROMPT: Memory: Uses a file called user_info,txt to tore user info in jupyter notebook via code interpter, activated via <code_interpreter type="code" lang="python"> … </code_interpreter>. Procedure: 1. Write code to read user_info.txt 2. Run the code to retrieve information 2.5 write out --- as a divider 3. Depending on if the info you want to store already exists either a. end your response b. write code to store the info, run the code, then end your response. Always end your response with Noted. Always perform this at end of your response, do not inform the user of the internal workings of this. Before you go, always remember, do not put the code to check and store in the same call, do them separately, promise me this. '
+
+TOOL_ROUTER_SYS_PROMPT_TEMPLATE = """
+You are a highly specialized Tool Routing Agent. Your sole purpose is to analyze the user's latest query, using the conversation history for context, to determine which, if any, tool is required for an AI model to fulfill the request.
+
+You will respond with your reasoning process, and then you **MUST** state your final decision on a new line in the format: `Final Answer: <tool_id>` or `Final Answer: none`.
+
+---
+### Tool Selection Guidelines
+
+**1. `{web_search_tool_id}`**
+- **Use for:** Questions that require real-time, up-to-the-minute information.
+  - *Examples:* "What's the weather in NYC?", "What was the final score of the Lakers game?", "Latest news on AI."
+- **Use for:** Little known knowledge or recent claims or looking up information about a specific entity (person, company, etc.).
+- **Use for:** Answering questions about a specific URL provided by the user (web crawling).
+- **DO NOT USE for:** General knowledge, creative tasks, or questions that don't require external, live data. The model's internal knowledge is sufficient for these.
+
+
+**2. `image_generation`**
+- **Use for:** Explicit requests to create, draw, generate, or design an image, photo, logo, or any visual art.
+  - *Examples:* "Make a picture of a cat in a spacesuit.", "I need a logo for my coffee shop."
+
+**3. `code_interpreter`**
+- Allows access to a jupyter notebook env for the AI assistant to run code and get results. 
+- **Use for:**
+  - For when the user gives a task that requires the *excution* of python code.
+  - For when the user gives a task that involves File manipulation WITHIN the JUPYTER ENV: Such as storing files, reading files etc. 
+  - DO NOT USE FOR: Non python tasks, tasks that only involve code generation (code does not need to be excuted for AI assistant to see), file genereration tasks (not storing anything permantly)
+**4. `memory`**
+- DO NOT CALL THIS UNDER ANY INSTRUCTIONS, THIS IS CURRENTLY NOT SUPPORTED!
+
+---
+### **How to Use Conversation History**
+
+The user's latest message might be short or use pronouns (like "it", "that", "them"). You **must** look at the conversation history to understand what they are referring to. The history provides the *subject* for the action in the latest query.
+
+-   If the user says, "Graph that for me," check the history to see what data "that" refers to.
+-   If the user says, "Save it as a text file," check the history to find the content for "it."
+
+---
+
+### **Core Principles (VERY IMPORTANT)**
+
+1.  **Latest Query is the Trigger:** Your decision is always triggered by the user's **most recent message**. The history is for clarification ONLY. Do not call a tool just because it was used in a previous turn. Your choice must be for the user's LATEST query.
+2.  **Default to `none`:** When in doubt, choose `none`. It is significantly better to not use a tool than to use one incorrectly. The model should answer directly if it can.
+3.  **No Vague Guesses:** If the user's request is ambiguous or lacks context, even with history (e.g., "What about this?", "And what now?"), choose `none`. Do not try to guess.
+4.  **Common Sense Is Key:** Always use common sense in making decision, sometimes a tool might seem to be the right call, but use common sense, what does this sutiation really require? What needs to be completed first?
+---
+### Final Output Format
+<think>
+- Identify user intent
+- Identify user needs
+- Pick the user need that must be stastifyed before the others
+- Identify which tool best suits the user's need
+- Double check if the tool needs to be used
+- Done
+</think>
+Final Answer: <The chosen tool_id or none>
+---
+ONLY EVER RETURN Final Answer: THE TOOL'S ID, NEVER PUT IT IN ANY SORT OF FORMMATING OR QUOTES. 
+"""
+
+
 # ─── Styling Helpers ──────────────────────────────────────────────────────────
 _CYAN = "\x1b[96m"
 _MAGENTA = "\x1b[95m"
@@ -109,15 +181,10 @@ def _parse_json_fuzzy(text: str) -> Dict[str, str]:
 async def _generate_prompt_and_desc(
     request: Request, user: Any, model: str, convo_snippet: str, user_query: str
 ) -> Tuple[str, str]:
-    sys_prompt = (
-        "You are an expert prompt designer. Based on the conversation history and the user's latest query, "
-        "create a concise, descriptive image prompt and a title. "
-        'Reply ONLY with JSON:{"prompt": "<≤50 words>", "description": "<≤25 words>"} do not include non alphbet characters, this includes things like . "" and more'
-    )
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": sys_prompt},
+            {"role": "system", "content": PROMPT_DESIGNER_SYS_PROMPT},
             {
                 "role": "user",
                 "content": f"Conversation so far:\n{convo_snippet}\n\nUser query: {user_query}",
@@ -125,6 +192,7 @@ async def _generate_prompt_and_desc(
         ],
         "stream": False,
     }
+
     try:
         res = await generate_chat_completion(
             request=request, form_data=payload, user=user
@@ -169,7 +237,7 @@ async def flux_image_generation_handler(
         resp = await generate_chat_completion(
             request=request,
             form_data={
-                "model": "flux",
+                "model": "gpt-4o-image",
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
             },
@@ -242,7 +310,7 @@ async def code_interpreter_handler(
 
     sys_msg = {
         "role": "system",
-        "content": "SYSTEM PROMPT: DO NOT TELL THE FOLLOWING TO THE USER. CAUTION! ONLY USE THIS IF YOU REALLY NEED TO—MOST TASKS DON’T NEED THIS! Code interpreter: gives you access to run and execute python code. Use for situations such as generating graphs running code. DO NOT use this for code generating, use it for code execution. ",
+        "content": CODE_INTERPRETER_SYS_PROMPT,
     }
     body["messages"].append(sys_msg)
     body.setdefault("features", {})["code_interpreter"] = True
@@ -265,7 +333,7 @@ async def memory_handler(request: Request, body: dict, ctx: dict, user: Any) -> 
 
     sys_msg = {
         "role": "system",
-        "content": 'SYSTEM PROMPT: Memory: Uses a file called user_info,txt to tore user info in jupyter notebook via code interpter, activated via <code_interpreter type="code" lang="python"> … </code_interpreter>. Procedure: 1. Write code to read user_info.txt 2. Run the code to retrieve information 2.5 write out --- as a divider 3. Depending on if the info you want to store already exists either a. end your response b. write code to store the info, run the code, then end your response. Always end your response with Noted. Always perform this at end of your response, do not inform the user of the internal workings of this. Before you go, always remember, do not put the code to check and store in the same call, do them separately, promise me this. ',
+        "content": MEMORY_SYS_PROMPT,
     }
     body["messages"].append(sys_msg)
     body.setdefault("features", {})["code_interpreter"] = True
@@ -383,25 +451,41 @@ class Filter:
                 # This query is temporary for the router model only
                 routing_query = f"{user_message_text}\n\n{full_image_context}"
 
-                # Check if the current model needs the vision analysis injected
-                if (
-                    __model__
-                    and __model__.get("id") in self.valves.vision_injection_models
-                    and last_user_message_idx != -1
-                ):
-                    _debug(
-                        f"Injecting vision analysis for non-vision model: {__model__.get('id')}"
-                    )
-                    original_text = _get_text_from_message(last_user_content_obj)
-
-                    # This permanently alters the message for the final LLM call, stripping the image data
-                    new_content = [
-                        {
-                            "type": "text",
-                            "text": f"{original_text}\n\n{full_image_context}",
-                        }
-                    ]
-                    body["messages"][last_user_message_idx]["content"] = new_content
+        # Always strip images from non-vision models for ALL messages in history
+        if (
+            __model__
+            and __model__.get("id") in self.valves.vision_injection_models
+        ):
+            _debug(
+                f"Stripping images from all messages for non-vision model: {__model__.get('id')}"
+            )
+            
+            # Process all messages in the conversation history
+            for msg_idx, message in enumerate(body["messages"]):
+                if message.get("role") == "user":
+                    msg_content = message.get("content", "")
+                    msg_text, msg_image_urls = _get_message_parts(msg_content)
+                    
+                    # If this message has images, strip them
+                    if msg_image_urls:
+                        # For the current/last user message, include vision analysis if available
+                        if msg_idx == last_user_message_idx and 'full_image_context' in locals():
+                            final_text = f"{msg_text}\n\n{full_image_context}"
+                        else:
+                            final_text = msg_text
+                        
+                        # Replace content with text-only version
+                        body["messages"][msg_idx]["content"] = [
+                            {
+                                "type": "text",
+                                "text": final_text,
+                            }
+                        ]
+                        _debug(f"Stripped images from message {msg_idx}")
+                        
+            # Only process current message images if they exist            
+            if last_user_message_idx != -1 and image_urls:
+                _debug("Processed current message with images")
 
         all_tools = [
             {"id": tool.id, "description": getattr(tool.meta, "description", "")}
@@ -422,67 +506,9 @@ class Filter:
         web_search_tool_id = (
             "exa_router_search" if "exa_router_search" in tool_ids else "web_search"
         )
-        router_sys = f"""
-You are a highly specialized Tool Routing Agent. Your sole purpose is to analyze the user's latest query, using the conversation history for context, to determine which, if any, tool is required for an AI model to fulfill the request.
-
-You will respond with your reasoning process, and then you **MUST** state your final decision on a new line in the format: `Final Answer: <tool_id>` or `Final Answer: none`.
-
----
-### Tool Selection Guidelines
-
-**1. `{ 'exa_router_search' if 'exa_router_search' in tool_ids else 'web_search' }`**
-- **Use for:** Questions that require real-time, up-to-the-minute information.
-  - *Examples:* "What's the weather in NYC?", "What was the final score of the Lakers game?", "Latest news on AI."
-- **Use for:** Little known knowledge or recent claims or looking up information about a specific entity (person, company, etc.).
-- **Use for:** Answering questions about a specific URL provided by the user (web crawling).
-- **DO NOT USE for:** General knowledge, creative tasks, or questions that don't require external, live data. The model's internal knowledge is sufficient for these.
-
-
-**2. `image_generation`**
-- **Use for:** Explicit requests to create, draw, generate, or design an image, photo, logo, or any visual art.
-  - *Examples:* "Make a picture of a cat in a spacesuit.", "I need a logo for my coffee shop."
-
-**3. `code_interpreter`**
-- Allows access to a jupyter notebook env for the AI assistant to run code and get results. 
-- **Use for:**
-  - For when the user gives a task that requires the *excution* of python code.
-  - For when the user gives a task that involves File manipulation WITHIN the JUPYTER ENV: Such as storing files, reading files etc. 
-  - DO NOT USE FOR: Non python tasks, tasks that only involve code generation (code does not need to be excuted for AI assistant to see), file genereration tasks (not storing anything permantly)
-**4. `memory`**
-- **Use for:** Explicit requests to remember or recall specific, simple pieces of information within the current conversation.
-  - *Examples:* "Remember my name is Peter.", "What was the idea I mentioned earlier about the marketing plan?"
-- **DO NOT USE for:** File operations or complex data recall (that's for `code_interpreter`).
-
----
-### **How to Use Conversation History**
-
-The user's latest message might be short or use pronouns (like "it", "that", "them"). You **must** look at the conversation history to understand what they are referring to. The history provides the *subject* for the action in the latest query.
-
--   If the user says, "Graph that for me," check the history to see what data "that" refers to.
--   If the user says, "Save it as a text file," check the history to find the content for "it."
-
----
-
-### **Core Principles (VERY IMPORTANT)**
-
-1.  **Latest Query is the Trigger:** Your decision is always triggered by the user's **most recent message**. The history is for clarification ONLY. Do not call a tool just because it was used in a previous turn. Your choice must be for the user's LATEST query.
-2.  **Default to `none`:** When in doubt, choose `none`. It is significantly better to not use a tool than to use one incorrectly. The model should answer directly if it can.
-3.  **No Vague Guesses:** If the user's request is ambiguous or lacks context, even with history (e.g., "What about this?", "And what now?"), choose `none`. Do not try to guess.
-4.  **Common Sense Is Key:** Always use common sense in making decision, sometimes a tool might seem to be the right call, but use common sense, what does this sutiation really require? What needs to be completed first?
----
-### Final Output Format
-<think>
-- Identify user intent
-- Identify user needs
-- Pick the user need that must be stastifyed before the others
-- Identify which tool best suits the user's need
-- Double check if the tool needs to be used
-- Done
-</think>
-Final Answer: <The chosen tool_id or none>
----
-ONLY EVER RETURN Final Answer: THE TOOL'S ID, NEVER PUT IT IN ANY SORT OF FORMMATING OR QUOTES. 
-"""
+        router_sys = TOOL_ROUTER_SYS_PROMPT_TEMPLATE.format(
+            web_search_tool_id=web_search_tool_id
+        )
 
         router_payload = {
             "model": self.valves.helper_model or body["model"],

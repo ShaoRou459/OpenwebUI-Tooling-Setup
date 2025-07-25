@@ -1,6 +1,4 @@
 # OpenWebUI 工具套件 简体中文版说明  
-（基于 mhwhgm 的 Auto-Tool v2 二次开发）
-
 ---
 
 ## 1. 背景与目标  

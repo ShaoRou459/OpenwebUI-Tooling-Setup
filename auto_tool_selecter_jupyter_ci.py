@@ -453,25 +453,41 @@ class Filter:
                 # This query is temporary for the router model only
                 routing_query = f"{user_message_text}\n\n{full_image_context}"
 
-                # Check if the current model needs the vision analysis injected
-                if (
-                    __model__
-                    and __model__.get("id") in self.valves.vision_injection_models
-                    and last_user_message_idx != -1
-                ):
-                    _debug(
-                        f"Injecting vision analysis for non-vision model: {__model__.get('id')}"
-                    )
-                    original_text = _get_text_from_message(last_user_content_obj)
-
-                    # This permanently alters the message for the final LLM call, stripping the image data
-                    new_content = [
-                        {
-                            "type": "text",
-                            "text": f"{original_text}\n\n{full_image_context}",
-                        }
-                    ]
-                    body["messages"][last_user_message_idx]["content"] = new_content
+        # Always strip images from non-vision models for ALL messages in history
+        if (
+            __model__
+            and __model__.get("id") in self.valves.vision_injection_models
+        ):
+            _debug(
+                f"Stripping images from all messages for non-vision model: {__model__.get('id')}"
+            )
+            
+            # Process all messages in the conversation history
+            for msg_idx, message in enumerate(body["messages"]):
+                if message.get("role") == "user":
+                    msg_content = message.get("content", "")
+                    msg_text, msg_image_urls = _get_message_parts(msg_content)
+                    
+                    # If this message has images, strip them
+                    if msg_image_urls:
+                        # For the current/last user message, include vision analysis if available
+                        if msg_idx == last_user_message_idx and 'full_image_context' in locals():
+                            final_text = f"{msg_text}\n\n{full_image_context}"
+                        else:
+                            final_text = msg_text
+                        
+                        # Replace content with text-only version
+                        body["messages"][msg_idx]["content"] = [
+                            {
+                                "type": "text",
+                                "text": final_text,
+                            }
+                        ]
+                        _debug(f"Stripped images from message {msg_idx}")
+                        
+            # Only process current message images if they exist            
+            if last_user_message_idx != -1 and image_urls:
+                _debug("Processed current message with images")
 
         all_tools = [
             {"id": tool.id, "description": getattr(tool.meta, "description", "")}

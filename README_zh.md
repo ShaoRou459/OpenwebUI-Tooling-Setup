@@ -37,6 +37,7 @@ https://private-user-images.githubusercontent.com/212266166/468440945-696cb316-c
 |---|---|---|
 | `helper_model` | 决定用不用工具 | GPT-4.1-mini / Llama3-8B |
 | `vision_model` | 看图说话 | GPT-4.1 / Gemini 2.5 Flash |
+| `vision_injection_models` | 需要图片注解的非识图模型| |
 | `history_char_limit` | 保留多少历史字符，省 token | 默认即可 |
 
 ### 3.2 搜索路由 Exa Search Router  

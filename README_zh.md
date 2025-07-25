@@ -36,7 +36,7 @@ https://private-user-images.githubusercontent.com/212266166/468440945-696cb316-c
 | Valve | 作用 | 推荐 |
 |---|---|---|
 | `helper_model` | 决定用不用工具 | GPT-4.1-mini / Llama3-8B |
-| `vision_model` | 看图说话 | GPT-4.1 / Gemini 2.5 Flash |
+| `vision_model` | 看图说话 | GPT-4.1 / Gemini 2.0 Flash |
 | `vision_injection_models` | 需要图片注解的非识图模型| |
 | `history_char_limit` | 保留多少历史字符，省 token | 默认即可 |
 
@@ -45,9 +45,9 @@ https://private-user-images.githubusercontent.com/212266166/468440945-696cb316-c
 |---|---|---|
 | `exa_api_key` | **必填** Exa 的 API Key | 去 exa.ai 申请 |
 | `router_model` | 选哪种搜索模式 | GPT-4.1-mini |
-| `quick_search_model` | Quick 模式用 | GPT-4.1-mini |
+| `quick_search_model` | Quick 模式用 | GPT-4.1-mini / Gemini 2.0 Flash |
 | `complete_agent_model` | Complete 模式“大脑” | GPT-4.1 / Gemini 2.0 Flash / Claude 4 Sonnet |
-| `complete_summarizer_model` | 最终总结 | Gemini 2.5 Flash / Llama 4 Maverick |
+| `complete_summarizer_model` | 最终总结 (long context) | Gemini 2.5 Flash / Llama 4 Maverick  |
 
 #### 搜索深度参数（可默认）
 - Quick 模式：`quick_urls_to_search`、`quick_queries_to_crawl`、`quick_max_context_chars`

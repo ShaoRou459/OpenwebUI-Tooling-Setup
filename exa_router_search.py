@@ -163,21 +163,132 @@ COMPLETE_SUMMARIZER_PROMPT = """You are an expert synthesizer. Your task is to p
 Use the agent's notes to understand what was considered important, and use the full context to pull the details. First, analyze the user's question to determine the best format for the answer (e.g., a brief summary, a detailed step-by-step guide, a comparative analysis, etc.). Then, formulate your response in that format."""
 
 
-# ─── Constants & Helpers ──────────────────────────────────────────────────────
+# ─── Debug System ────────────────────────────────────────────────────────────
+class Debug:
+    """Structured debug logging system for SearchRouterTool."""
 
-_CYAN = "\x1b[96m"
-_MAGENTA = "\x1b[95m"
-_RESET = "\x1b[0m"
-_BOLD = "\x1b[1m"
-URL_RE = re.compile(r"https?://\S+")
+    # ANSI color codes
+    _COLORS = {
+        "RESET": "\x1b[0m",
+        "BOLD": "\x1b[1m",
+        "DIM": "\x1b[2m",
+        "CYAN": "\x1b[96m",
+        "GREEN": "\x1b[92m",
+        "YELLOW": "\x1b[93m",
+        "RED": "\x1b[91m",
+        "MAGENTA": "\x1b[95m",
+        "BLUE": "\x1b[94m",
+        "WHITE": "\x1b[97m",
+    }
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def _format_msg(self, category: str, message: str, color: str = "CYAN") -> str:
+        """Format a debug message with consistent styling."""
+        if not self.enabled:
+            return ""
+
+        prefix = f"{self._COLORS['MAGENTA']}{self._COLORS['BOLD']}[SearchRouterTool]{self._COLORS['RESET']}"
+        cat_colored = f"{self._COLORS[color]}{self._COLORS['BOLD']}{category}{self._COLORS['RESET']}"
+        msg_colored = f"{self._COLORS[color]}{message}{self._COLORS['RESET']}"
+
+        return f"{prefix} {cat_colored}: {msg_colored}"
+
+    def _log(self, category: str, message: str, color: str = "CYAN") -> None:
+        """Internal logging method."""
+        if self.enabled:
+            formatted = self._format_msg(category, message, color)
+            if formatted:
+                print(formatted, file=sys.stderr)
+
+    def router(self, message: str) -> None:
+        """Log search strategy routing decisions."""
+        self._log("ROUTER", message, "BLUE")
+
+    def search(self, message: str) -> None:
+        """Log search operations."""
+        self._log("SEARCH", message, "GREEN")
+
+    def crawl(self, message: str) -> None:
+        """Log crawling operations."""
+        self._log("CRAWL", message, "YELLOW")
+
+    def agent(self, message: str) -> None:
+        """Log agentic operations in COMPLETE mode."""
+        self._log("AGENT", message, "MAGENTA")
+
+    def synthesis(self, message: str) -> None:
+        """Log synthesis and summarization."""
+        self._log("SYNTHESIS", message, "WHITE")
+
+    def error(self, message: str) -> None:
+        """Log errors and warnings."""
+        self._log("ERROR", message, "RED")
+
+    def flow(self, message: str) -> None:
+        """Log general workflow steps."""
+        self._log("FLOW", message, "CYAN")
+
+    def data(self, label: str, data: Any, truncate: int = 80) -> None:
+        """Log data with optional truncation."""
+        if not self.enabled:
+            return
+
+        if isinstance(data, str) and len(data) > truncate:
+            data_str = f"{data[:truncate]}..."
+        else:
+            data_str = str(data)
+
+        self._log("DATA", f"{label} → {data_str}", "DIM")
+
+    def query(self, message: str) -> None:
+        """Log query refinement operations."""
+        self._log("QUERY", message, "BLUE")
+
+    def iteration(self, message: str) -> None:
+        """Log research iterations in COMPLETE mode."""
+        self._log("ITERATION", message, "CYAN")
+
+    def report(self, message: str) -> None:
+        """Log full debug reports without truncation."""
+        if self.enabled:
+            # Split long reports into chunks to avoid Portainer truncation
+            lines = message.split("\n")
+            chunk_size = 20  # Lines per chunk
+
+            for i in range(0, len(lines), chunk_size):
+                chunk = lines[i : i + chunk_size]
+                chunk_text = "\n".join(chunk)
+
+                if i == 0:
+                    # First chunk gets the REPORT prefix
+                    formatted = self._format_msg(
+                        "REPORT", f"Part {(i//chunk_size)+1}:\n{chunk_text}", "WHITE"
+                    )
+                else:
+                    # Subsequent chunks get REPORT-CONT prefix
+                    formatted = self._format_msg(
+                        "REPORT-CONT",
+                        f"Part {(i//chunk_size)+1}:\n{chunk_text}",
+                        "WHITE",
+                    )
+
+                if formatted:
+                    print(formatted, file=sys.stderr)
 
 
+# Legacy compatibility - will be replaced
 def _debug(msg: str) -> None:
-    """Lightweight stderr logger."""
+    """Legacy debug function - use Debug class instead."""
     print(
-        f"{_MAGENTA}{_BOLD}[SearchRouterTool]{_RESET}{_CYAN} {msg}{_RESET}",
+        f"{Debug._COLORS['MAGENTA']}{Debug._COLORS['BOLD']}[SearchRouterTool]{Debug._COLORS['RESET']}{Debug._COLORS['CYAN']} {msg}{Debug._COLORS['RESET']}",
         file=sys.stderr,
     )
+
+
+# ─── Constants & Helpers ──────────────────────────────────────────────────────
+URL_RE = re.compile(r"https?://\S+")
 
 
 def _get_text_from_message(message_content: Any) -> str:
@@ -194,7 +305,7 @@ def _get_text_from_message(message_content: Any) -> str:
 
 
 async def generate_with_retry(
-    max_retries: int = 3, delay: int = 3, **kwargs: Any
+    max_retries: int = 3, delay: int = 3, debug: Debug = None, **kwargs: Any
 ) -> Dict[str, Any]:
     """
     A wrapper for generate_chat_completion that includes a retry mechanism.
@@ -206,12 +317,14 @@ async def generate_with_retry(
             return result
         except Exception as e:
             last_exception = e
-            _debug(
-                f"⚠️ LLM call failed on attempt {attempt + 1}/{max_retries}. Retrying in {delay} seconds..."
-            )
+            if debug:
+                debug.error(
+                    f"LLM call failed on attempt {attempt + 1}/{max_retries}. Retrying in {delay} seconds..."
+                )
             await asyncio.sleep(delay)
 
-    _debug(f"❌ LLM call failed after {max_retries} retries.")
+    if debug:
+        debug.error(f"LLM call failed after {max_retries} retries.")
     raise last_exception
 
 
@@ -220,34 +333,79 @@ async def generate_with_retry(
 
 @dataclass
 class QuickDebugReport:
-    """A structured report for debugging the QUICK search process."""
+    """Enhanced structured report for debugging the STANDARD search process."""
 
     initial_query: str = ""
     refined_query: str = ""
     urls_found: List[str] = field(default_factory=list)
     urls_crawled: List[str] = field(default_factory=list)
+    urls_successful: List[str] = field(default_factory=list)
+    urls_failed: List[str] = field(default_factory=list)
     final_prompt: str = ""
     final_output: str = ""
 
+    # Valve settings for comparison
+    valve_urls_to_search: int = 0
+    valve_queries_to_crawl: int = 0
+    valve_max_context_chars: int = 0
+
+    # Actual metrics
+    context_length: int = 0
+    was_truncated: bool = False
+
     def format_report(self) -> str:
         report_parts = [
-            "\n\n" + "=" * 25 + " QUICK SEARCH DEBUG REPORT " + "=" * 25,
+            "\n\n" + "=" * 30 + " STANDARD SEARCH DEBUG REPORT " + "=" * 30,
             f"INITIAL USER QUERY: {self.initial_query}",
             f"REFINED SEARCH QUERY: {self.refined_query}",
-            "-" * 80,
-            f"URLs Found ({len(self.urls_found)}): {self.urls_found}",
-            f"URLs Crawled ({len(self.urls_crawled)}): {self.urls_crawled}",
-            f"Final Summarizer Prompt:\n{self.final_prompt[:1000]}...",
-            "-" * 80,
-            f"Final Output:\n{self.final_output[:500]}...",
-            "=" * 80 + "\n",
+            "",
+            "─── VALVE SETTINGS vs ACTUAL RESULTS ───",
+            f"URLs to Search (valve): {self.valve_urls_to_search} | Found: {len(self.urls_found)}",
+            f"URLs to Crawl (valve): {self.valve_queries_to_crawl} | Attempted: {len(self.urls_crawled)} | Successful: {len(self.urls_successful)}",
+            f"Max Context Chars (valve): {self.valve_max_context_chars} | Used: {self.context_length} {'(TRUNCATED)' if self.was_truncated else ''}",
+            "",
+            "─── SEARCH RESULTS ───",
+            f"URLs Found ({len(self.urls_found)}):",
         ]
+
+        for i, url in enumerate(self.urls_found, 1):
+            report_parts.append(f"  {i}. {url}")
+
+        report_parts.extend(
+            [
+                "",
+                "─── CRAWL RESULTS ───",
+                f"Successfully Crawled ({len(self.urls_successful)}):",
+            ]
+        )
+
+        for i, url in enumerate(self.urls_successful, 1):
+            report_parts.append(f"  ✓ {i}. {url}")
+
+        if self.urls_failed:
+            report_parts.extend(
+                [
+                    f"Failed to Crawl ({len(self.urls_failed)}):",
+                ]
+            )
+            for i, url in enumerate(self.urls_failed, 1):
+                report_parts.append(f"  ✗ {i}. {url}")
+
+        report_parts.extend(
+            [
+                "",
+                "─── SYNTHESIS ───",
+                f"Final Output Preview:\n{self.final_output[:400]}{'...' if len(self.final_output) > 400 else ''}",
+                "",
+                "=" * 91 + "\n",
+            ]
+        )
         return "\n".join(report_parts)
 
 
 @dataclass
 class CompleteDebugReport:
-    """A structured report for debugging the COMPLETE search process."""
+    """Enhanced structured report for debugging the COMPLETE search process."""
 
     initial_user_query: str = ""
     refined_initial_query: str = ""
@@ -255,6 +413,15 @@ class CompleteDebugReport:
     final_decision: str = ""
     final_payload: str = ""
     final_output: str = ""
+
+    # Valve settings for comparison
+    valve_urls_per_query: int = 0
+    valve_queries_to_crawl: int = 0
+    valve_queries_to_generate: int = 0
+    valve_max_iterations: int = 0
+
+    # Total metrics
+    total_sources_found: int = 0
 
     def add_iteration(
         self,
@@ -284,57 +451,81 @@ class CompleteDebugReport:
                 return
 
     def format_report(self) -> str:
+        # Calculate total metrics
+        total_queries_executed = sum(
+            len(iter_data.get("searches", [])) for iter_data in self.iterations
+        )
+        total_sources_crawled = sum(
+            len(search.get("crawled_urls", []))
+            for iter_data in self.iterations
+            for search in iter_data.get("searches", [])
+        )
+        actual_iterations = len(
+            [i for i in self.iterations if i.get("iteration", 0) > 0]
+        )
+
         report_parts = [
-            "\n\n" + "=" * 25 + " COMPLETE SEARCH DEBUG REPORT " + "=" * 25,
+            "\n\n" + "=" * 30 + " COMPLETE SEARCH DEBUG REPORT " + "=" * 30,
             f"INITIAL USER QUERY: {self.initial_user_query}",
             f"REFINED SEARCH QUERY: {self.refined_initial_query}",
-            "-" * 80,
+            "",
+            "─── VALVE SETTINGS vs ACTUAL RESULTS ───",
+            f"Max Iterations (valve): {self.valve_max_iterations} | Executed: {actual_iterations}",
+            f"URLs per Query (valve): {self.valve_urls_per_query} | Queries to Crawl (valve): {self.valve_queries_to_crawl}",
+            f"Queries to Generate (valve): {self.valve_queries_to_generate}",
+            f"Total Queries Executed: {total_queries_executed} | Total Sources Gathered: {total_sources_crawled}",
+            f"Unique Sources in Notepad: {self.total_sources_found}",
+            "",
+            "─── RESEARCH ITERATIONS ───",
         ]
+
         for iter_data in self.iterations:
             iteration_num = iter_data.get("iteration", "N/A")
-            report_parts.append(f"ITERATION {iteration_num}:")
 
             if iteration_num == 0:
+                report_parts.append("INITIAL SEARCH:")
                 if iter_data.get("searches"):
                     initial_search = iter_data["searches"][0]
                     query = initial_search.get("query", "N/A")
                     crawled_urls = initial_search.get("crawled_urls", [])
-                    report_parts.append(f'  [INITIAL SEARCH] Query: "{query}"')
-                    report_parts.append(
-                        f"  [INITIAL CRAWL] Crawled URLs: {crawled_urls}"
-                    )
+                    report_parts.append(f'  Query: "{query}"')
+                    report_parts.append(f"  Sources Found: {len(crawled_urls)}")
+                    for i, url in enumerate(crawled_urls, 1):
+                        report_parts.append(f"    {i}. {url}")
             else:
                 decision = iter_data.get("continue_decision", "N/A")
                 notes = iter_data.get("reasoning_notes", "")
                 queries = iter_data.get("generated_queries", [])
 
-                report_parts.append(f"  [DECIDER] Decision to continue: {decision}")
-                if notes:
-                    report_parts.append(f"  [REASONING NOTES]\n{notes}")
+                report_parts.append(f"ITERATION {iteration_num}:")
+                report_parts.append(f"  Decision: {decision}")
+
                 if queries:
-                    report_parts.append(
-                        f"  [Q-GEN] Generated Queries for this iteration: {queries}"
-                    )
+                    report_parts.append(f"  Generated Queries ({len(queries)}):")
+                    for i, query in enumerate(queries, 1):
+                        report_parts.append(f"    {i}. {query}")
 
                 for search_data in iter_data.get("searches", []):
                     query = search_data.get("query", "N/A")
                     crawled_urls = search_data.get("crawled_urls", [])
-                    report_parts.append(f'    - [SEARCH] Executed query: "{query}"')
-                    report_parts.append(f"    - [CRAWL] Crawled URLs: {crawled_urls}")
+                    report_parts.append(
+                        f"  Search: \"{query[:60]}{'...' if len(query) > 60 else ''}\""
+                    )
+                    report_parts.append(f"    Sources: {len(crawled_urls)}")
+                    for i, url in enumerate(crawled_urls, 1):
+                        report_parts.append(f"      {i}. {url}")
 
-            report_parts.append("-" * 80)
+            report_parts.append("")
 
-        report_parts.append("FINAL ACTION:")
-        report_parts.append(f"  - Final Output Decision: {self.final_decision}")
-        if self.final_decision == "SYNTHESIZE":
-            report_parts.append(
-                f"  - Payload sent to Summarizer Model:\n{self.final_payload[:1000]}..."
-            )
-        else:
-            report_parts.append(
-                f"  - Raw context returned to user:\n{self.final_payload[:1000]}..."
-            )
-        report_parts.append("=" * 80 + "\n")
+        report_parts.extend(
+            [
+                "─── FINAL SYNTHESIS ───",
+                f"Synthesis Decision: {self.final_decision}",
+                f"Final Output Preview:\n{self.final_output[:400]}{'...' if len(self.final_output) > 400 else ''}",
+                "",
+                "=" * 91 + "\n",
+            ]
+        )
         return "\n".join(report_parts)
 
 
@@ -384,9 +575,14 @@ class Tools:
         complete_max_search_iterations: int = Field(
             default=2, description="Maximum number of research loops for the agent."
         )
+        debug_enabled: bool = Field(
+            default=False,
+            description="Enable detailed debug logging for troubleshooting search operations.",
+        )
 
     def __init__(self) -> None:
         self.valves = self.Valves()
+        self.debug = Debug(enabled=False)  # Will be updated when valves change
         self._exa: Optional[Exa] = None
 
     def _exa_client(self) -> Exa:
@@ -397,7 +593,7 @@ class Tools:
             if not key:
                 raise RuntimeError("Exa API key missing")
             self._exa = Exa(key)
-            _debug("🔑 Exa client initialised")
+            self.debug.flow("🔑 Exa client initialised")
         return self._exa
 
     # Main
@@ -409,6 +605,10 @@ class Tools:
         __user__: Optional[Dict] = None,
         __messages__: Optional[List[Dict]] = None,
     ) -> dict:
+        # Update debug state based on current valve setting
+        self.debug.enabled = self.valves.debug_enabled
+        self.debug.flow("Starting SearchRouterTool processing")
+
         async def _status(desc: str, done: bool = False) -> None:
             if __event_emitter__:
                 await __event_emitter__(
@@ -418,10 +618,14 @@ class Tools:
         messages = __messages__ or []
         last_user_message = get_last_user_message(messages)
         if not last_user_message:
+            self.debug.error("Could not find a user message to process")
             return {
                 "content": "Could not find a user message to process. Please try again.",
                 "show_source": False,
             }
+
+        self.debug.data("User query", query)
+        self.debug.data("Last user message", last_user_message)
 
         # Build conversation history snippet for context
         history_messages = messages[-6:-1]
@@ -436,7 +640,8 @@ class Tools:
         router_query = f"Conversation History:\n{convo_snippet}\n\nLatest User Query:\n'{last_user_message}'"
 
         user_obj = Users.get_user_by_id(__user__["id"]) if __user__ else None
-        _debug(f"🟢 Router triggered – full query context:\n{router_query}")
+        self.debug.router(f"Router triggered with full query context")
+        self.debug.data("Router query", router_query, truncate=150)
         await _status("Deciding search strategy…")
 
         router_payload = {
@@ -449,10 +654,13 @@ class Tools:
         }
         try:
             res = await generate_with_retry(
-                request=__request__, form_data=router_payload, user=user_obj
+                request=__request__,
+                form_data=router_payload,
+                user=user_obj,
+                debug=self.debug,
             )
             llm_response_text = res["choices"][0]["message"]["content"]
-            _debug(f"Search strategy router full response:\n{llm_response_text}")
+            self.debug.data("Router full response", llm_response_text, truncate=200)
 
             decision = ""
             for line in llm_response_text.splitlines():
@@ -461,14 +669,18 @@ class Tools:
                     break
 
             if not decision:
-                _debug("⚠️ Could not parse 'Final Answer:'. Defaulting to STANDARD.")
+                self.debug.router(
+                    "Could not parse 'Final Answer:'. Defaulting to STANDARD."
+                )
                 decision = "STANDARD"
 
         except Exception as exc:
-            _debug(f"⚠️ Router LLM failed after retries: {exc}. Defaulting to STANDARD.")
+            self.debug.error(
+                f"Router LLM failed after retries: {exc}. Defaulting to STANDARD."
+            )
             decision = "STANDARD"
 
-        _debug(f"🤔 Router decision → {decision}")
+        self.debug.router(f"Router decision → {decision}")
         exa = self._exa_client()
 
         # Mode 1 - Crawl
@@ -482,7 +694,7 @@ class Tools:
 
             url_to_crawl = urls[0]
             await _status("Reading content from URL...")
-            _debug(f"Executing CRAWL on: {url_to_crawl}")
+            self.debug.crawl(f"Executing CRAWL on: {url_to_crawl}")
             try:
                 crawled_results = exa.get_contents([url_to_crawl])
                 content = (
@@ -491,12 +703,40 @@ class Tools:
                     else "Could not retrieve any text content from the URL."
                 )
                 await _status("Crawl complete.", done=True)
+                self.debug.crawl(f"Successfully crawled {len(content)} characters")
+
+                # Simple CRAWL mode debug report
+                if self.debug.enabled:
+                    crawl_report = [
+                        "\n\n" + "=" * 35 + " CRAWL MODE DEBUG REPORT " + "=" * 35,
+                        f"URL REQUESTED: {url_to_crawl}",
+                        f"CRAWL SUCCESS: ✓ Yes",
+                        f"CONTENT LENGTH: {len(content)} characters",
+                        f"CONTENT PREVIEW:\n{content[:300]}{'...' if len(content) > 300 else ''}",
+                        "",
+                        "=" * 96 + "\n",
+                    ]
+                    self.debug.report("\n".join(crawl_report))
+
                 return {
                     "content": f"## Content from {url_to_crawl}:\n\n{content}",
                     "show_source": False,
                 }
             except Exception as e:
-                _debug(f"💥 Crawl failed: {e}")
+                self.debug.error(f"Crawl failed: {e}")
+
+                # CRAWL mode failure debug report
+                if self.debug.enabled:
+                    crawl_report = [
+                        "\n\n" + "=" * 35 + " CRAWL MODE DEBUG REPORT " + "=" * 35,
+                        f"URL REQUESTED: {url_to_crawl}",
+                        f"CRAWL SUCCESS: ✗ No",
+                        f"ERROR: {str(e)}",
+                        "",
+                        "=" * 96 + "\n",
+                    ]
+                    self.debug.report("\n".join(crawl_report))
+
                 return {
                     "content": f"I failed while trying to crawl the URL: {e}",
                     "show_source": False,
@@ -504,7 +744,13 @@ class Tools:
 
         # Mode 2 - Standard
         elif decision == "STANDARD":
-            report = QuickDebugReport(initial_query=last_user_message)
+            self.debug.flow("Starting STANDARD search mode")
+            report = QuickDebugReport(
+                initial_query=last_user_message,
+                valve_urls_to_search=self.valves.quick_urls_to_search,
+                valve_queries_to_crawl=self.valves.quick_queries_to_crawl,
+                valve_max_context_chars=self.valves.quick_max_context_chars,
+            )
             final_result = ""
             context = ""
             try:
@@ -521,10 +767,13 @@ class Tools:
                 }
 
                 res = await generate_with_retry(
-                    request=__request__, form_data=refiner_payload, user=user_obj
+                    request=__request__,
+                    form_data=refiner_payload,
+                    user=user_obj,
+                    debug=self.debug,
                 )
                 llm_response_text = res["choices"][0]["message"]["content"].strip()
-                _debug(f"SQR full response:\n{llm_response_text}")
+                self.debug.data("SQR full response", llm_response_text, truncate=200)
 
                 # Extract the last line after the </think> block
                 if "</think>" in llm_response_text:
@@ -532,11 +781,11 @@ class Tools:
                     refined_query = llm_response_text.split("</think>")[-1].strip()
                 else:
                     # Fallback for models that might not follow instructions perfectly
-                    _debug(
-                        "⚠️ SQR response did not contain a <think> block. Falling back to last line."
+                    self.debug.query(
+                        "SQR response did not contain a <think> block. Falling back to last line."
                     )
                     refined_query = llm_response_text.splitlines()[-1].strip()
-                _debug(f"Refined STANDARD query: {refined_query}")
+                self.debug.query(f"Refined STANDARD query: {refined_query}")
                 report.refined_query = refined_query
 
                 await _status(f'Searching for: "{refined_query}"')
@@ -546,6 +795,7 @@ class Tools:
                     use_autoprompt=True,
                 )
                 report.urls_found = [res.url for res in search_data.results]
+                self.debug.search(f"Found {len(report.urls_found)} search results")
 
                 crawl_candidates = search_data.results[
                     : self.valves.quick_queries_to_crawl
@@ -553,16 +803,46 @@ class Tools:
 
                 if not crawl_candidates:
                     final_result = "My search found no results to read. Please try a different query."
+                    self.debug.search("No crawl candidates found")
                 else:
                     domains = [
                         urlparse(res.url).netloc.replace("www.", "")
                         for res in crawl_candidates
                     ]
                     await _status(f"Reading from: {', '.join(domains)}")
+                    self.debug.crawl(
+                        f"Crawling {len(crawl_candidates)} URLs from domains: {domains}"
+                    )
 
                     ids_to_crawl = [res.id for res in crawl_candidates]
                     report.urls_crawled = [res.url for res in crawl_candidates]
                     crawled_results = exa.get_contents(ids_to_crawl)
+
+                    # Log crawl success/failure details
+                    attempted_count = len(crawl_candidates)
+                    successful_count = len(crawled_results.results)
+                    failed_count = attempted_count - successful_count
+
+                    # Populate report with success/failure data
+                    successful_urls = [res.url for res in crawled_results.results]
+                    report.urls_successful = successful_urls
+
+                    if failed_count > 0:
+                        report.urls_failed = [
+                            url
+                            for url in report.urls_crawled
+                            if url not in successful_urls
+                        ]
+                        self.debug.error(
+                            f"Crawl failures: {failed_count}/{attempted_count} URLs failed"
+                        )
+                        self.debug.data("Failed URLs", report.urls_failed)
+                        self.debug.data("Successful URLs", successful_urls)
+                    else:
+                        report.urls_failed = []
+                        self.debug.crawl(
+                            f"All {successful_count}/{attempted_count} URLs crawled successfully"
+                        )
 
                     await _status(
                         f"Synthesizing answer from {len(crawled_results.results)} sources..."
@@ -575,6 +855,33 @@ class Tools:
                     )
                     context = context[: self.valves.quick_max_context_chars]
 
+                    # More detailed synthesis logging and report population
+                    sources_used = len(crawled_results.results)
+                    context_length = len(context)
+                    was_truncated = (
+                        len(
+                            "\n\n".join(
+                                [
+                                    f"## Source: {res.url}\n\n{res.text}"
+                                    for res in crawled_results.results
+                                ]
+                            )
+                        )
+                        > self.valves.quick_max_context_chars
+                    )
+
+                    # Populate report metrics
+                    report.context_length = context_length
+                    report.was_truncated = was_truncated
+
+                    synthesis_msg = f"Generated context with {context_length} characters from {sources_used} sources"
+                    if was_truncated:
+                        synthesis_msg += f" (truncated from max {self.valves.quick_max_context_chars})"
+                    if sources_used < attempted_count:
+                        synthesis_msg += f" (originally attempted {attempted_count})"
+
+                    self.debug.synthesis(synthesis_msg)
+
                     summarizer_user_prompt = f"## Context:\n{context}\n\n## User's Question:\n{last_user_message}"
                     report.final_prompt = f"SYSTEM: {QUICK_SUMMARIZER_PROMPT}\nUSER: {summarizer_user_prompt}"
                     summarizer_payload = {
@@ -586,25 +893,37 @@ class Tools:
                         "stream": False,
                     }
                     final_res = await generate_with_retry(
-                        request=__request__, form_data=summarizer_payload, user=user_obj
+                        request=__request__,
+                        form_data=summarizer_payload,
+                        user=user_obj,
+                        debug=self.debug,
                     )
                     final_result = final_res["choices"][0]["message"]["content"]
                     await _status("Standard search complete.", done=True)
+                    self.debug.synthesis("STANDARD search synthesis complete")
 
             except Exception as e:
-                _debug(f"💥 STANDARD search path failed with an exception: {e}")
+                self.debug.error(f"STANDARD search path failed with an exception: {e}")
                 if context:
                     final_result = f"I found some information but encountered an error while processing it. Here is the raw data I gathered:\n\n{context}"
                 else:
                     final_result = f"I failed during the standard search: {e}"
             finally:
                 report.final_output = final_result
-                _debug(report.format_report())
+                if self.debug.enabled:
+                    self.debug.report(report.format_report())
                 return {"content": final_result, "show_source": False}
 
         # Mode 3 - Complete
         elif decision == "COMPLETE":
-            report = CompleteDebugReport(initial_user_query=last_user_message)
+            self.debug.flow("Starting COMPLETE search mode")
+            report = CompleteDebugReport(
+                initial_user_query=last_user_message,
+                valve_urls_per_query=self.valves.complete_urls_to_search_per_query,
+                valve_queries_to_crawl=self.valves.complete_queries_to_crawl,
+                valve_queries_to_generate=self.valves.complete_queries_to_generate,
+                valve_max_iterations=self.valves.complete_max_search_iterations,
+            )
             notepad = {}
             final_result = ""
             search_notes = ""
@@ -622,10 +941,15 @@ class Tools:
                 }
 
                 res = await generate_with_retry(
-                    request=__request__, form_data=refiner_payload, user=user_obj
+                    request=__request__,
+                    form_data=refiner_payload,
+                    user=user_obj,
+                    debug=self.debug,
                 )
                 llm_response_text = res["choices"][0]["message"]["content"].strip()
-                _debug(f"SQR full response:\n{llm_response_text}")
+                self.debug.data(
+                    "COMPLETE SQR response", llm_response_text, truncate=200
+                )
 
                 # Extract the last line after the </think> block
                 if "</think>" in llm_response_text:
@@ -633,11 +957,11 @@ class Tools:
                     refined_query = llm_response_text.split("</think>")[-1].strip()
                 else:
                     # Fallback for models that might not follow instructions perfectly
-                    _debug(
-                        "⚠️ SQR response did not contain a <think> block. Falling back to last line."
+                    self.debug.query(
+                        "COMPLETE SQR response did not contain a <think> block. Falling back to last line."
                     )
                     refined_query = llm_response_text.splitlines()[-1].strip()
-                _debug(f"Refined query: {refined_query}")
+                self.debug.query(f"Refined COMPLETE query: {refined_query}")
                 report.refined_initial_query = refined_query
 
                 await _status(f'Initial search for: "{refined_query}"')
@@ -656,8 +980,27 @@ class Tools:
                     raise RuntimeError(
                         "Initial search did not yield any results to analyze."
                     )
+
+                # Track attempted vs successful crawls
+                attempted_crawl_count = len(ids_to_crawl)
                 crawled_results = exa.get_contents(ids_to_crawl)
+                successful_crawl_count = len(crawled_results.results)
+                failed_crawl_count = attempted_crawl_count - successful_crawl_count
+
                 crawled_urls = [res.url for res in crawled_results.results]
+
+                if failed_crawl_count > 0:
+                    self.debug.error(
+                        f"Initial COMPLETE crawl failures: {failed_crawl_count}/{attempted_crawl_count} URLs failed"
+                    )
+                    self.debug.search(
+                        f"Initial COMPLETE search found {successful_crawl_count} sources (attempted {attempted_crawl_count})"
+                    )
+                else:
+                    self.debug.search(
+                        f"Initial COMPLETE search found {successful_crawl_count} sources"
+                    )
+
                 report.add_iteration(0, "START", "", [])
                 report.add_search_to_iteration(0, refined_query, crawled_urls)
 
@@ -666,20 +1009,23 @@ class Tools:
                         notepad[res.url] = (
                             f"## Content from '{res.title}' ({res.url}):\n{' '.join(res.text.split())}"
                         )
-                _debug(f"Notepad initialized with {len(notepad)} sources.")
+                self.debug.agent(f"Notepad initialized with {len(notepad)} sources.")
 
                 for i in range(self.valves.complete_max_search_iterations):
                     iteration_num = i + 1
+                    self.debug.iteration(
+                        f"Starting iteration {iteration_num}/{self.valves.complete_max_search_iterations}"
+                    )
                     await _status(
                         f"Analyzing findings (Pass {iteration_num}/{self.valves.complete_max_search_iterations})..."
                     )
                     current_context = "\n\n---\n\n".join(notepad.values())
 
                     if i == 0:
-                        _debug("First iteration, forcing continuation.")
+                        self.debug.agent("First iteration, forcing continuation.")
                         research_decision = "CONTINUE"
                     else:
-                        _debug("Deciding whether to continue research...")
+                        self.debug.agent("Deciding whether to continue research...")
                         decider_user_prompt = f"## User's Question:\n{last_user_message}\n\n## Current Research Context:\n{current_context}\n\nIs every part of the user's question answered in the context? Reply with the single word CONTINUE or FINISH."
                         decider_payload = {
                             "model": self.valves.complete_agent_model,
@@ -693,17 +1039,18 @@ class Tools:
                             request=__request__,
                             form_data=decider_payload,
                             user=user_obj,
+                            debug=self.debug,
                         )
                         research_decision = (
                             res["choices"][0]["message"]["content"].strip().upper()
                         )
-                        _debug(f"Research decision: {research_decision}")
+                        self.debug.agent(f"Research decision: {research_decision}")
 
                     if research_decision == "FINISH":
                         report.add_iteration(
                             iteration_num, research_decision, search_notes, []
                         )
-                        _debug("Decision made to finalize the answer.")
+                        self.debug.agent("Decision made to finalize the answer.")
                         break
 
                     await _status("Planning next steps...")
@@ -717,10 +1064,13 @@ class Tools:
                         "stream": False,
                     }
                     res = await generate_with_retry(
-                        request=__request__, form_data=notes_payload, user=user_obj
+                        request=__request__,
+                        form_data=notes_payload,
+                        user=user_obj,
+                        debug=self.debug,
                     )
                     search_notes = res["choices"][0]["message"]["content"]
-                    _debug(f"Search Notes:\n{search_notes}")
+                    self.debug.data("Search Notes", search_notes, truncate=150)
 
                     q_gen_sys_prompt = COMPLETE_Q_GEN_PROMPT_TEMPLATE.format(
                         date_str=f"{datetime.now().year} {datetime.now().month} {datetime.now().day}",
@@ -737,7 +1087,10 @@ class Tools:
                     }
 
                     res = await generate_with_retry(
-                        request=__request__, form_data=q_gen_payload, user=user_obj
+                        request=__request__,
+                        form_data=q_gen_payload,
+                        user=user_obj,
+                        debug=self.debug,
                     )
                     raw_q_gen_response = res["choices"][0]["message"]["content"]
                     clean_response = (
@@ -760,7 +1113,9 @@ class Tools:
                             str(q) for q in targeted_queries if isinstance(q, str)
                         ]
 
-                    _debug(f"Generated new targeted queries: {targeted_queries}")
+                    self.debug.agent(
+                        f"Generated new targeted queries: {targeted_queries}"
+                    )
                     report.add_iteration(
                         iteration_num, research_decision, search_notes, targeted_queries
                     )
@@ -770,6 +1125,7 @@ class Tools:
 
                     for t_query in targeted_queries:
                         await _status(f'Following new lead: "{t_query[:50]}..."')
+                        self.debug.search(f'Executing targeted query: "{t_query}"')
                         search_results = exa.search(
                             t_query,
                             num_results=self.valves.complete_urls_to_search_per_query,
@@ -782,10 +1138,33 @@ class Tools:
                             ]
                         ]
                         if not ids_to_crawl:
+                            self.debug.search(
+                                f"No crawl candidates found for query: {t_query[:50]}..."
+                            )
                             continue
 
+                        # Track attempted vs successful crawls for targeted queries
+                        attempted_targeted_count = len(ids_to_crawl)
                         crawled_results = exa.get_contents(ids_to_crawl)
+                        successful_targeted_count = len(crawled_results.results)
+                        failed_targeted_count = (
+                            attempted_targeted_count - successful_targeted_count
+                        )
+
                         crawled_urls = [res.url for res in crawled_results.results]
+
+                        if failed_targeted_count > 0:
+                            self.debug.error(
+                                f"Targeted crawl failures: {failed_targeted_count}/{attempted_targeted_count} URLs failed for query: {t_query[:50]}..."
+                            )
+                            self.debug.crawl(
+                                f"Crawled {successful_targeted_count} URLs (attempted {attempted_targeted_count}) for query: {t_query[:50]}..."
+                            )
+                        else:
+                            self.debug.crawl(
+                                f"Crawled {successful_targeted_count} URLs for query: {t_query[:50]}..."
+                            )
+
                         report.add_search_to_iteration(
                             iteration_num, t_query, crawled_urls
                         )
@@ -794,7 +1173,9 @@ class Tools:
                                 notepad[res.url] = (
                                     f"## Content from '{res.title}' ({res.url}):\n{' '.join(res.text.split())}"
                                 )
-                        _debug(f"Notepad now contains {len(notepad)} sources.")
+                        self.debug.agent(
+                            f"Notepad now contains {len(notepad)} sources."
+                        )
 
                 await _status(
                     f"Compiling final report from {len(notepad)} gathered sources..."
@@ -818,13 +1199,17 @@ class Tools:
                     request=__request__,
                     form_data=synthesis_decider_payload,
                     user=user_obj,
+                    debug=self.debug,
                 )
                 final_action = res["choices"][0]["message"]["content"].strip().upper()
-                _debug(f"Final action decision: {final_action}")
+                self.debug.synthesis(f"Final action decision: {final_action}")
                 report.final_decision = final_action
 
                 if final_action == "SYNTHESIZE":
                     await _status("Synthesizing final answer...")
+                    self.debug.synthesis(
+                        "Synthesizing comprehensive answer from research"
+                    )
                     summarizer_user_prompt = f"## User's Original Question:\n{last_user_message}\n\n## Agent's Research Notes:\n{search_notes}\n\n## Full Research Context (Your Notepad):\n{final_context}"
                     summarizer_payload = {
                         "model": self.valves.complete_summarizer_model,
@@ -834,21 +1219,25 @@ class Tools:
                         ],
                     }
                     final_summary_response = await generate_with_retry(
-                        request=__request__, form_data=summarizer_payload, user=user_obj
+                        request=__request__,
+                        form_data=summarizer_payload,
+                        user=user_obj,
+                        debug=self.debug,
                     )
                     final_result = final_summary_response["choices"][0]["message"][
                         "content"
                     ]
                     report.final_payload = f"SYSTEM: {COMPLETE_SUMMARIZER_PROMPT}\nUSER: {summarizer_user_prompt}"
                 else:  # RETURN_RAW
-                    _debug("Returning raw context as requested.")
+                    self.debug.synthesis("Returning raw context as requested.")
                     final_result = f"I have gathered the following raw information based on your request:\n\n---\n\n{final_context}"
                     report.final_payload = final_context
 
                 await _status("Research complete.", done=True)
+                self.debug.flow("COMPLETE search mode finished successfully")
 
             except Exception as e:
-                _debug(f"💥 COMPLETE search path failed with an exception: {e}")
+                self.debug.error(f"COMPLETE search path failed with an exception: {e}")
                 if notepad:
                     final_context = "\n\n---\n\n".join(notepad.values())
                     final_result = f"The research process encountered an error. Here are the notes I gathered before the issue occurred:\n\n{final_context}"
@@ -856,9 +1245,12 @@ class Tools:
                     final_result = f"I failed during the COMPLETE research process: {e}"
             finally:
                 report.final_output = final_result
-                _debug(report.format_report())
+                report.total_sources_found = len(notepad)
+                if self.debug.enabled:
+                    self.debug.report(report.format_report())
                 return {"content": final_result, "show_source": False}
 
+        self.debug.flow("SearchRouterTool processing completed")
         return {
             "content": f"Router chose '{decision}', but no corresponding action was taken.",
             "show_source": False,

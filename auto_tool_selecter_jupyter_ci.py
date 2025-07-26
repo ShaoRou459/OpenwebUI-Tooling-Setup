@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field
 from open_webui.models.users import Users
 from open_webui.models.tools import Tools
 from open_webui.utils.chat import generate_chat_completion
+from open_webui.utils.middleware import chat_web_search_handler
 
 # ─── System Prompts ───────────────────────────────────────────────────────────
 
@@ -98,17 +99,87 @@ ONLY EVER RETURN Final Answer: THE TOOL'S ID, NEVER PUT IT IN ANY SORT OF FORMMA
 """
 
 
-# ─── Styling Helpers ──────────────────────────────────────────────────────────
-_CYAN = "\x1b[96m"
-_MAGENTA = "\x1b[95m"
-_RESET = "\x1b[0m"
-_BOLD = "\x1b[1m"
+# ─── Debug System ────────────────────────────────────────────────────────────
+class Debug:
+    """Structured debug logging system for AutoToolSelector."""
+
+    # ANSI color codes
+    _COLORS = {
+        "RESET": "\x1b[0m",
+        "BOLD": "\x1b[1m",
+        "DIM": "\x1b[2m",
+        "CYAN": "\x1b[96m",
+        "GREEN": "\x1b[92m",
+        "YELLOW": "\x1b[93m",
+        "RED": "\x1b[91m",
+        "MAGENTA": "\x1b[95m",
+        "BLUE": "\x1b[94m",
+    }
+
+    def __init__(self, enabled: bool = False):
+        self.enabled = enabled
+
+    def _format_msg(self, category: str, message: str, color: str = "CYAN") -> str:
+        """Format a debug message with consistent styling."""
+        if not self.enabled:
+            return ""
+
+        timestamp = ""  # Can add timestamp if needed
+        prefix = f"{self._COLORS['MAGENTA']}{self._COLORS['BOLD']}[AutoToolSelector]{self._COLORS['RESET']}"
+        cat_colored = f"{self._COLORS[color]}{self._COLORS['BOLD']}{category}{self._COLORS['RESET']}"
+        msg_colored = f"{self._COLORS[color]}{message}{self._COLORS['RESET']}"
+
+        return f"{prefix} {cat_colored}: {msg_colored}"
+
+    def _log(self, category: str, message: str, color: str = "CYAN") -> None:
+        """Internal logging method."""
+        if self.enabled:
+            formatted = self._format_msg(category, message, color)
+            if formatted:
+                print(formatted, file=sys.stderr)
+
+    def router(self, message: str) -> None:
+        """Log router decision making."""
+        self._log("ROUTER", message, "BLUE")
+
+    def vision(self, message: str) -> None:
+        """Log vision processing."""
+        self._log("VISION", message, "GREEN")
+
+    def tool(self, message: str) -> None:
+        """Log tool activation."""
+        self._log("TOOL", message, "YELLOW")
+
+    def handler(self, message: str) -> None:
+        """Log special handler activity."""
+        self._log("HANDLER", message, "MAGENTA")
+
+    def error(self, message: str) -> None:
+        """Log errors and warnings."""
+        self._log("ERROR", message, "RED")
+
+    def flow(self, message: str) -> None:
+        """Log general workflow steps."""
+        self._log("FLOW", message, "CYAN")
+
+    def data(self, label: str, data: Any, truncate: int = 80) -> None:
+        """Log data with optional truncation."""
+        if not self.enabled:
+            return
+
+        if isinstance(data, str) and len(data) > truncate:
+            data_str = f"{data[:truncate]}..."
+        else:
+            data_str = str(data)
+
+        self._log("DATA", f"{label} → {data_str}", "DIM")
 
 
+# Legacy compatibility - will be replaced
 def _debug(msg: str) -> None:
-    """Lightweight stderr logger."""
+    """Legacy debug function - use Debug class instead."""
     print(
-        f"{_MAGENTA}{_BOLD}[AutoToolSelector]{_RESET}{_CYAN} {msg}{_RESET}",
+        f"{Debug._COLORS['MAGENTA']}{Debug._COLORS['BOLD']}[AutoToolSelector]{Debug._COLORS['RESET']}{Debug._COLORS['CYAN']} {msg}{Debug._COLORS['RESET']}",
         file=sys.stderr,
     )
 
@@ -166,7 +237,7 @@ _URL_RE = re.compile(r"https?://\S+")
 
 
 # ─── Image Gen Helpers ────────────────────────────────────────────────────────
-def _parse_json_fuzzy(text: str) -> Dict[str, str]:
+def _parse_json_fuzzy(text: str, debug: Debug = None) -> Dict[str, str]:
     raw = text.strip()
     if raw.startswith("```") and raw.endswith("```"):
         raw = "\n".join(raw.splitlines()[1:-1])
@@ -176,12 +247,18 @@ def _parse_json_fuzzy(text: str) -> Dict[str, str]:
     try:
         return json.loads(raw)
     except Exception as e:
-        _debug(f"⚠️ JSON parse error → {e}. Raw: {raw[:80]}…")
+        if debug:
+            debug.error(f"JSON parse error → {e}. Raw: {raw[:80]}…")
         return {}
 
 
 async def _generate_prompt_and_desc(
-    request: Request, user: Any, model: str, convo_snippet: str, user_query: str
+    request: Request,
+    user: Any,
+    model: str,
+    convo_snippet: str,
+    user_query: str,
+    debug: Debug = None,
 ) -> Tuple[str, str]:
     payload = {
         "model": model,
@@ -199,19 +276,21 @@ async def _generate_prompt_and_desc(
         res = await generate_chat_completion(
             request=request, form_data=payload, user=user
         )
-        obj = _parse_json_fuzzy(res["choices"][0]["message"]["content"])
+        obj = _parse_json_fuzzy(res["choices"][0]["message"]["content"], debug)
         prompt = obj.get("prompt", user_query)
         description = obj.get("description", "Image generated from conversation.")
-        _debug(f"Router prompt → {prompt[:60]}… | desc: {description}")
+        if debug:
+            debug.handler(f"Router prompt → {prompt[:60]}… | desc: {description}")
         return prompt, description
     except Exception as exc:
-        _debug(f"Prompt‑designer error → {exc}")
+        if debug:
+            debug.error(f"Prompt‑designer error → {exc}")
         return user_query, "Image generated."
 
 
 # ─── Special Tool Handlers ────────────────────────────────────────────────────
 async def flux_image_generation_handler(
-    request: Any, body: dict, ctx: dict, user: Any
+    request: Any, body: dict, ctx: dict, user: Any, debug: Debug = None
 ) -> dict:
     prompt: str = ctx.get("prompt") or get_last_user_message(body["messages"])
     description: str = ctx.get("description", "Image generated.")
@@ -234,7 +313,8 @@ async def flux_image_generation_handler(
             }
         )
 
-    _debug(f"Calling Flux with prompt → {prompt[:80]}…")
+    if debug:
+        debug.handler(f"Calling Flux with prompt → {prompt[:80]}…")
     try:
         resp = await generate_chat_completion(
             request=request,
@@ -247,7 +327,8 @@ async def flux_image_generation_handler(
         )
         flux_reply = resp["choices"][0]["message"]["content"].strip()
     except Exception as exc:
-        _debug(f"Flux error → {exc}")
+        if debug:
+            debug.error(f"Flux error → {exc}")
         fail = f"❌ Image generation failed: {exc}"
         if emitter:
             await emitter(
@@ -271,7 +352,8 @@ async def flux_image_generation_handler(
 
     url_match = _URL_RE.search(flux_reply)
     image_url = url_match.group(0) if url_match else flux_reply
-    _debug(f"✅ Flux URL → {image_url}")
+    if debug:
+        debug.handler(f"✅ Flux URL → {image_url}")
 
     if emitter:
         await emitter({"type": "delete", "data": {"message_id": placeholder_id}})
@@ -296,7 +378,7 @@ async def flux_image_generation_handler(
 
 
 async def code_interpreter_handler(
-    request: Request, body: dict, ctx: dict, user: Any
+    request: Request, body: dict, ctx: dict, user: Any, debug: Debug = None
 ) -> dict:
     emitter = ctx.get("__event_emitter__")
     if emitter:
@@ -316,11 +398,14 @@ async def code_interpreter_handler(
     }
     body["messages"].append(sys_msg)
     body.setdefault("features", {})["code_interpreter"] = True
-    _debug("🔧 Code Interpreter enabled for this turn")
+    if debug:
+        debug.handler("🔧 Code Interpreter enabled for this turn")
     return body
 
 
-async def memory_handler(request: Request, body: dict, ctx: dict, user: Any) -> dict:
+async def memory_handler(
+    request: Request, body: dict, ctx: dict, user: Any, debug: Debug = None
+) -> dict:
     emitter = ctx.get("__event_emitter__")
     if emitter:
         await emitter(
@@ -339,7 +424,8 @@ async def memory_handler(request: Request, body: dict, ctx: dict, user: Any) -> 
     }
     body["messages"].append(sys_msg)
     body.setdefault("features", {})["code_interpreter"] = True
-    _debug("🔧 Code Interpreter enabled for this turn --Via memory")
+    if debug:
+        debug.handler("🔧 Code Interpreter enabled for this turn --Via memory")
     return body
 
 
@@ -359,6 +445,14 @@ class Filter:
             default=[],
             description="List of non-vision model IDs that should receive the image analysis text.",
         )
+        use_exa_router_search: bool = Field(
+            default=True,
+            description="Toggle to use exa_router_search instead of default web_search when available.",
+        )
+        debug_enabled: bool = Field(
+            default=False,
+            description="Enable detailed debug logging for troubleshooting.",
+        )
 
     class UserValves(BaseModel):
         auto_tools: bool = Field(default=True)
@@ -366,10 +460,12 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
         self.user_valves = self.UserValves()
+        self.debug = Debug(enabled=False)  # Will be updated when valves change
         self.special_handlers = {
             "image_generation": flux_image_generation_handler,
             "code_interpreter": code_interpreter_handler,
             "memory": memory_handler,
+            "web_search": chat_web_search_handler,
         }
 
     async def inlet(
@@ -380,15 +476,26 @@ class Filter:
         __user__: dict | None = None,
         __model__: dict | None = None,
     ) -> dict:
+        # Update debug state based on current valve setting
+        self.debug.enabled = self.valves.debug_enabled
+        self.debug.flow("Starting AutoToolSelector processing")
+
         if not self.user_valves.auto_tools:
+            self.debug.flow("Auto tools disabled, skipping processing")
             return body
 
         messages = body.get("messages", [])
         if not messages:
+            self.debug.flow("No messages found, skipping processing")
             return body
+
+        self.debug.flow(f"Processing {len(messages)} messages")
 
         last_user_content_obj = get_last_user_message_content(messages)
         user_message_text, image_urls = _get_message_parts(last_user_content_obj)
+
+        self.debug.data("User message text", user_message_text)
+        self.debug.data("Image URLs found", len(image_urls))
 
         last_user_message_idx = next(
             (
@@ -406,7 +513,7 @@ class Filter:
 
         if self.valves.vision_model and image_urls:
             image_analysis_started = True
-            _debug(
+            self.debug.vision(
                 f"Found {len(image_urls)} image(s). Sending to vision model: {self.valves.vision_model}"
             )
             await __event_emitter__(
@@ -418,7 +525,7 @@ class Filter:
 
             image_descriptions = []
             for idx, url in enumerate(image_urls):
-                _debug(f"Analyzing image {idx + 1}/{len(image_urls)}...")
+                self.debug.vision(f"Analyzing image {idx + 1}/{len(image_urls)}...")
                 vision_payload = {
                     "model": self.valves.vision_model,
                     "messages": [
@@ -443,7 +550,7 @@ class Filter:
                         f"[Image {idx + 1} Context: {description}]"
                     )
                 except Exception as e:
-                    _debug(f"⚠️ Vision model failed for image {idx + 1}: {e}.")
+                    self.debug.error(f"Vision model failed for image {idx + 1}: {e}.")
                     image_descriptions.append(
                         f"[Image {idx + 1} Context: Analysis failed.]"
                     )
@@ -454,28 +561,28 @@ class Filter:
                 routing_query = f"{user_message_text}\n\n{full_image_context}"
 
         # Always strip images from non-vision models for ALL messages in history
-        if (
-            __model__
-            and __model__.get("id") in self.valves.vision_injection_models
-        ):
-            _debug(
+        if __model__ and __model__.get("id") in self.valves.vision_injection_models:
+            self.debug.vision(
                 f"Stripping images from all messages for non-vision model: {__model__.get('id')}"
             )
-            
+
             # Process all messages in the conversation history
             for msg_idx, message in enumerate(body["messages"]):
                 if message.get("role") == "user":
                     msg_content = message.get("content", "")
                     msg_text, msg_image_urls = _get_message_parts(msg_content)
-                    
+
                     # If this message has images, strip them
                     if msg_image_urls:
                         # For the current/last user message, include vision analysis if available
-                        if msg_idx == last_user_message_idx and 'full_image_context' in locals():
+                        if (
+                            msg_idx == last_user_message_idx
+                            and "full_image_context" in locals()
+                        ):
                             final_text = f"{msg_text}\n\n{full_image_context}"
                         else:
                             final_text = msg_text
-                        
+
                         # Replace content with text-only version
                         body["messages"][msg_idx]["content"] = [
                             {
@@ -483,17 +590,18 @@ class Filter:
                                 "text": final_text,
                             }
                         ]
-                        _debug(f"Stripped images from message {msg_idx}")
-                        
-            # Only process current message images if they exist            
+                        self.debug.vision(f"Stripped images from message {msg_idx}")
+
+            # Only process current message images if they exist
             if last_user_message_idx != -1 and image_urls:
-                _debug("Processed current message with images")
+                self.debug.vision("Processed current message with images")
 
         all_tools = [
             {"id": tool.id, "description": getattr(tool.meta, "description", "")}
             for tool in Tools.get_tools()
         ]
         tool_ids = [tool["id"] for tool in all_tools]
+        self.debug.data("Available tools", tool_ids)
 
         history_messages = messages[-6:]
         convo_snippet_parts = []
@@ -505,9 +613,13 @@ class Filter:
             convo_snippet_parts.append(f"{role}: {content!r}")
         convo_snippet = "\n".join(convo_snippet_parts)
 
-        web_search_tool_id = (
-            "exa_router_search" if "exa_router_search" in tool_ids else "web_search"
-        )
+        # Determine web search tool based on valve setting
+        if self.valves.use_exa_router_search and "exa_router_search" in tool_ids:
+            web_search_tool_id = "exa_router_search"
+        else:
+            web_search_tool_id = "web_search"
+        self.debug.data("Selected web search tool", web_search_tool_id)
+
         router_sys = TOOL_ROUTER_SYS_PROMPT_TEMPLATE.format(
             web_search_tool_id=web_search_tool_id
         )
@@ -524,12 +636,15 @@ class Filter:
             "stream": False,
         }
 
+        self.debug.router(f"Sending routing query to model: {router_payload['model']}")
+        self.debug.data("Routing query", routing_query, truncate=120)
+
         try:
             res = await generate_chat_completion(
                 request=__request__, form_data=router_payload, user=user_obj
             )
             llm_response_text = res["choices"][0]["message"]["content"]
-            _debug(f"Router full response:\n{llm_response_text}")
+            self.debug.data("Router full response", llm_response_text, truncate=200)
 
             decision = "none"
             for line in llm_response_text.splitlines():
@@ -546,16 +661,19 @@ class Filter:
             if decision == "none":
                 last_line = llm_response_text.strip().splitlines()[-1].strip().lower()
                 if last_line in tool_ids:
-                    _debug("Found tool ID on the last line as a fallback.")
+                    self.debug.router("Found tool ID on the last line as a fallback.")
                     decision = last_line
 
-            _debug(f"Router extracted decision → {decision}")
+            self.debug.router(f"Extracted decision → {decision}")
 
         except Exception as exc:
-            _debug(f"Router error → {exc}")
+            self.debug.error(f"Router error → {exc}")
             return body
 
         if decision == "none" and image_analysis_started:
+            self.debug.flow(
+                "No tool selected but image analysis was performed, completing"
+            )
             await __event_emitter__(
                 {"type": "status", "data": {"description": "", "done": True}}
             )
@@ -580,7 +698,7 @@ class Filter:
                 tool_body["messages"] = tool_messages
 
         if decision in self.special_handlers:
-            _debug(f"Activating special handler for '{decision}'")
+            self.debug.handler(f"Activating special handler for '{decision}'")
             handler = self.special_handlers[decision]
             ctx = {"__event_emitter__": __event_emitter__}
 
@@ -600,20 +718,30 @@ class Filter:
                     router_payload["model"],
                     convo_snippet,
                     user_message_text,
+                    self.debug,
                 )
                 ctx["prompt"] = prompt
                 ctx["description"] = desc
 
             # The handler receives the temporary tool_body, leaving the original `body` untouched.
-            return await handler(__request__, tool_body, ctx, user_obj)
+            return await handler(__request__, tool_body, ctx, user_obj, self.debug)
 
         elif decision and decision != "none" and decision in tool_ids:
-            _debug(f"Activating standard tool with ID → {decision}")
+            self.debug.tool(f"Activating standard tool with ID → {decision}")
             # For standard tools, we modify the main body that gets passed on.
-            body["tool_ids"] = [decision]
-            if "messages" in tool_body:
-                body["messages"] = tool_body["messages"]
+            # Special case for web_search: use handler if valve is set to default, otherwise use tool ID
+            if decision == "web_search" and not self.valves.use_exa_router_search:
+                # Use the special handler for default web search
+                handler = self.special_handlers["web_search"]
+                ctx = {"__event_emitter__": __event_emitter__}
+                return await handler(__request__, tool_body, ctx, user_obj, self.debug)
+            else:
+                # Use the tool ID approach for exa_router_search or other tools
+                body["tool_ids"] = [decision]
+                if "messages" in tool_body:
+                    body["messages"] = tool_body["messages"]
 
         # Return the original, unmodified body unless vision injection occurred.
         # The vision injection logic already correctly modifies the main `body`.
+        self.debug.flow("AutoToolSelector processing completed")
         return body

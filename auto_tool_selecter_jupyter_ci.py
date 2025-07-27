@@ -49,6 +49,8 @@ You will respond with your reasoning process, and then you **MUST** state your f
   - *Examples:* "What's the weather in NYC?", "What was the final score of the Lakers game?", "Latest news on AI."
 - **Use for:** Little known knowledge or recent claims or looking up information about a specific entity (person, company, etc.).
 - **Use for:** Answering questions about a specific URL provided by the user (web crawling).
+- **Use for:** Research queries requiring multiple sources, comparisons, or deep analysis.
+- **Use for:** Questions with temporal context like "latest", "recent", "current", "best in 2025".
 - **DO NOT USE for:** General knowledge, creative tasks, or questions that don't require external, live data. The model's internal knowledge is sufficient for these.
 
 
@@ -84,14 +86,11 @@ The user's latest message might be short or use pronouns (like "it", "that", "th
 3.  **No Vague Guesses:** If the user's request is ambiguous or lacks context, even with history (e.g., "What about this?", "And what now?"), choose `none`. Do not try to guess.
 4.  **Common Sense Is Key:** Always use common sense in making decision, sometimes a tool might seem to be the right call, but use common sense, what does this sutiation really require? What needs to be completed first?
 ---
-### Final Output Format
+### Final Output Format (Do not repeate the titles)
 <think>
-- Identify user intent
-- Identify user needs
-- Pick the user need that must be stastifyed before the others
-- Identify which tool best suits the user's need
-- Double check if the tool needs to be used
-- Done
+- Identify user intent: (3 words)
+- Identify user need: (5 words)
+- Identify tool needed: (5 words)
 </think>
 Final Answer: <The chosen tool_id or none>
 ---
@@ -722,6 +721,10 @@ class Filter:
                 )
                 ctx["prompt"] = prompt
                 ctx["description"] = desc
+            elif decision == "web_search" and "full_image_context" in locals():
+                # Pass image analysis to web search for better context
+                ctx["image_context"] = locals()["full_image_context"]
+                self.debug.handler("Passing image context to web search")
 
             # The handler receives the temporary tool_body, leaving the original `body` untouched.
             return await handler(__request__, tool_body, ctx, user_obj, self.debug)

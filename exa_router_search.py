@@ -27,8 +27,12 @@ from open_webui.utils.misc import get_last_user_message
 
 try:
     from exa_py import Exa
+
+    EXA_AVAILABLE = True
 except ImportError:
     Exa = None
+    EXA_AVAILABLE = False
+    print("⚠️ exa_py not installed. Install with: pip install exa_py")
 
 
 # ─── System Prompts ───────────────────────────────────────────────────────────
@@ -51,10 +55,10 @@ USER EXPLICTLY ASKED FOR A DEEP RESEARCH + The user is asking for a comparison b
 Final Answer: COMPLETE
 """
 
-SQR_PROMPT_TEMPLATE = f"""
+IMPROVED_SQR_PROMPT_TEMPLATE = f"""
 You are a **Search Query Refinement (SQR) bot**.
 
-Your task is to turn a user's free-form question into the smallest, highest-yield keyword query.
+Your task is to turn a user's free-form question into an optimized keyword query for semantic search engines.
 
 First, think step-by-step inside a `<think>` block. In your thinking process, you MUST follow the SQR PROTOCOL to construct the query.
 After the `<think>` block, on a new line, output *ONLY* the final, assembled query string.
@@ -62,76 +66,72 @@ After the `<think>` block, on a new line, output *ONLY* the final, assembled que
 -------------------------------------------------
 SQR PROTOCOL (to be followed inside the `<think>` block)
 
-STEP 0️⃣ — DATE Token  
-If the user query includes any temporal cue («latest», «new in», «current», «today», «this week», etc.), append  
+STEP 0️⃣ — Context Analysis
+Analyze the conversation history and user query to understand:
+- The core intent and information need
+- Any domain-specific context (technical, academic, news, etc.)
+- The level of detail required (quick facts vs deep research)
+
+STEP 1️⃣ — DATE Token  
+If the user query includes any temporal cue («latest», «new in», «current», «today», «this week», «recent», «2025», etc.), append  
 `(YYYY M D)`, using the current date of {datetime.now().year} {datetime.now().month} {datetime.now().day}.  
 If not, omit the date.
 
-STEP 1️⃣ — Keyword Extraction  
+STEP 2️⃣ — Keyword Extraction  
 Pick the *core noun+verb pair* plus any *must-have context words* (brand, city, SKU ID, regulation, version number, etc.).
+Prioritize semantic keywords over exact phrase matching.
 
-STEP 2️⃣ — Functional Modifiers  
-Add the minimal disambiguation word(s) that narrow the search domain:  
-- For factual answers → add «wikidata.org» or «government.ca etc»  
-- For opinions/recs → add «Reddit OR StackOverflow OR Hacker News etc»  
-- For price → add «price OR cost OR MSRP etc»  
-- For download → add «download OR .pdf OR repo etc»  
-- For news → add «NYTimes OR SCMP OR Reuters etc» (pick the most relevant subset).
+STEP 3️⃣ — Domain & Source Targeting  
+Add minimal disambiguation based on query type:  
+- For factual/authoritative info → add «site:gov OR site:edu OR Wikipedia»
+- For technical/dev questions → add «GitHub OR StackOverflow OR docs»
+- For opinions/reviews → add «Reddit OR forums OR reviews»  
+- For news/current events → add «Reuters OR BBC OR AP News»
+- For academic research → add «scholar OR research OR study»
+- For comparisons → add «vs OR comparison OR review»
 
-STEP 3️⃣ — Breadth Tokens  
-Append 2-4 comma-separated authoritative / crowd-sourced sources or high-coverage keywords to guarantee wide recall.
+STEP 4️⃣ — Breadth Enhancement  
+Add 2-3 high-authority sources or semantic variants to improve recall:
+- Use OR operators for synonyms and related terms
+- Include authoritative domain names when relevant
 
-STEP 4️⃣ — Assembly (No Spaces After Commas)  
-Assemble the parts in this order:  
-[CORE QUERY] [DATE] [FUNCTION MOD] [BREADTH TOKENS]
+STEP 5️⃣ — Assembly & Optimization
+Assemble parts optimally for semantic search:  
+[CORE QUERY] [DATE] [DOMAIN TARGETING] [BREADTH TERMS]
+Ensure query length stays under 15 words for optimal performance.
 
-STEP 5️⃣ — Final Review
-Review the assembled query inside your `<think>` block before outputting the final result.
+STEP 6️⃣ — Final Review
+Verify the query captures the user's intent and will return relevant, authoritative results.
 
 -------------------------------------------------
 EXAMPLES
 
-User: “Latest news on EU AI act”
-
+User: "Latest developments in quantum computing breakthroughs"
 <think>
-STEP 0: User mentioned \"Latest\", so I'll add the current date: `2025 7 21`.
-STEP 1: Core query is \"EU AI Act\".
-STEP 2: This is news, so I'll add news sources.
-STEP 3: Breadth tokens: NYTimes, Politico, Verge.
-STEP 4: Assembling: `EU AI Act 2025 7 21 NYTimes,Politico,Verge`
-STEP 5: The query looks good. It's specific and targets relevant sources.
+STEP 0: User wants recent news about quantum computing advances
+STEP 1: "Latest" indicates temporal context, adding current date
+STEP 2: Core terms: "quantum computing breakthroughs developments"  
+STEP 3: This is tech news, so targeting news sources
+STEP 4: Adding breadth with synonyms and authoritative sources
+STEP 5: Assembling for semantic search optimization
+STEP 6: Query captures intent for recent, authoritative quantum computing news
 </think>
-EU AI Act 2025 7 21 NYTimes,Politico,Verge
+quantum computing breakthroughs developments {datetime.now().year} {datetime.now().month} {datetime.now().day} Reuters BBC TechCrunch OR advances OR progress
+
+User: "Best practices for React hooks performance optimization"
+<think>
+STEP 0: Technical development question about React hooks optimization
+STEP 1: No temporal indicators, omitting date
+STEP 2: Core terms: "React hooks performance optimization best practices"
+STEP 3: Technical question, targeting development resources
+STEP 4: Adding authoritative dev sources and semantic variants
+STEP 5: Assembling for technical search
+STEP 6: Query targets authoritative technical resources
+</think>
+React hooks performance optimization best practices GitHub StackOverflow docs OR patterns OR tips
 
 -------------------------------------------------
-END
-dd «NYTimes OR SCMP OR Reuters etc» (pick the most relevant subset).
-
-STEP 3️⃣ — Breadth Tokens  
-Append 2-4 comma-separated authoritative / crowd-sourced sources or high-coverage keywords to guarantee wide recall.
-
-STEP 4️⃣ — Assembly (No Spaces After Commas)  
-Assemble the parts in this order:  
-[CORE QUERY] [DATE] [FUNCTION MOD] [BREADTH TOKENS]
-
-STEP 5️⃣ — Output  
-Return *ONLY* the assembled string, no explanation.
-
--------------------------------------------------
-EXAMPLES
-
-User: “Latest news on EU AI act” →  
-`EU AI Act 2025 7 19 NYTimes,Politico,Verge`
-
-User: “Best phone deals July 2025” →  
-`Phone Deals July 2025 price Reddit,BestBuy,Amazon,RedFlagDeals`
-
-User: “Craigslist Vancouver furniture for sale under 100 CAD” →  
-`Craigslist Vancouver furniture under 100 CAD price Reddit,Facebook Marketplace`
-
--------------------------------------------------
-END
-"""
+END"""
 
 QUICK_SUMMARIZER_PROMPT = "Based ONLY on the following context, organise and cleaup the information so that a person can answer the user's request based off these."
 
@@ -308,23 +308,32 @@ async def generate_with_retry(
     max_retries: int = 3, delay: int = 3, debug: Debug = None, **kwargs: Any
 ) -> Dict[str, Any]:
     """
-    A wrapper for generate_chat_completion that includes a retry mechanism.
+    A wrapper for generate_chat_completion that includes a retry mechanism with exponential backoff.
     """
     last_exception = None
     for attempt in range(max_retries):
         try:
             result = await generate_chat_completion(**kwargs)
+            if debug and attempt > 0:
+                debug.flow(f"LLM call succeeded on attempt {attempt + 1}")
             return result
         except Exception as e:
             last_exception = e
             if debug:
                 debug.error(
-                    f"LLM call failed on attempt {attempt + 1}/{max_retries}. Retrying in {delay} seconds..."
+                    f"LLM call failed on attempt {attempt + 1}/{max_retries}: {str(e)[:100]}..."
                 )
-            await asyncio.sleep(delay)
+
+            # Don't wait on the last attempt
+            if attempt < max_retries - 1:
+                # Exponential backoff with jitter
+                wait_time = delay * (2**attempt) + (attempt * 0.5)
+                await asyncio.sleep(wait_time)
 
     if debug:
-        debug.error(f"LLM call failed after {max_retries} retries.")
+        debug.error(
+            f"LLM call failed after {max_retries} retries. Last error: {str(last_exception)[:100]}..."
+        )
     raise last_exception
 
 
@@ -529,8 +538,8 @@ class CompleteDebugReport:
         return "\n".join(report_parts)
 
 
-# Valves
-class Tools:
+# Valves and core functionality
+class ToolsInternal:
 
     class Valves(BaseModel):
         exa_api_key: str = Field(default="", description="Your Exa API key.")
@@ -584,17 +593,90 @@ class Tools:
         self.valves = self.Valves()
         self.debug = Debug(enabled=False)  # Will be updated when valves change
         self._exa: Optional[Exa] = None
+        self._query_cache: Dict[str, Any] = {}  # Simple query caching
+        self._cache_max_size = 100  # Limit cache size
 
     def _exa_client(self) -> Exa:
         if self._exa is None:
             if Exa is None:
-                raise RuntimeError("exa_py not installed")
+                raise RuntimeError(
+                    "exa_py not installed. Please install with: pip install exa_py"
+                )
             key = self.valves.exa_api_key or os.getenv("EXA_API_KEY")
             if not key:
-                raise RuntimeError("Exa API key missing")
-            self._exa = Exa(key)
-            self.debug.flow("🔑 Exa client initialised")
+                raise RuntimeError(
+                    "Exa API key missing. Please set exa_api_key in valves or EXA_API_KEY environment variable"
+                )
+            try:
+                self._exa = Exa(key)
+                self.debug.flow("🔑 Exa client initialised successfully")
+            except Exception as e:
+                self.debug.error(f"Failed to initialize Exa client: {e}")
+                raise RuntimeError(f"Failed to initialize Exa client: {e}")
         return self._exa
+
+    async def _safe_exa_search(
+        self, query: str, num_results: int, debug_context: str = ""
+    ) -> List[Any]:
+        """Safely perform Exa search with error handling and simple caching."""
+        # Simple cache key based on query and num_results
+        cache_key = f"{query}:{num_results}"
+
+        # Check cache first
+        if cache_key in self._query_cache:
+            self.debug.search(f"Cache hit for {debug_context}: using cached results")
+            return self._query_cache[cache_key]
+
+        try:
+            exa = self._exa_client()
+            search_data = exa.search(
+                query, num_results=num_results, use_autoprompt=True
+            )
+            results = search_data.results
+
+            # Cache the results (with size limit)
+            if len(self._query_cache) >= self._cache_max_size:
+                # Remove oldest entry (simple FIFO)
+                oldest_key = next(iter(self._query_cache))
+                del self._query_cache[oldest_key]
+
+            self._query_cache[cache_key] = results
+            self.debug.search(
+                f"Exa search successful for {debug_context}: {len(results)} results (cached)"
+            )
+            return results
+        except Exception as e:
+            self.debug.error(
+                f"Exa search failed for {debug_context}: {str(e)[:100]}..."
+            )
+            return []
+
+    async def _safe_exa_crawl(
+        self, ids_or_urls: List[str], debug_context: str = ""
+    ) -> List[Any]:
+        """Safely perform Exa content crawling with error handling."""
+        if not ids_or_urls:
+            return []
+
+        try:
+            exa = self._exa_client()
+            crawled_results = exa.get_contents(ids_or_urls)
+            success_count = len(crawled_results.results)
+            total_count = len(ids_or_urls)
+
+            if success_count < total_count:
+                self.debug.error(
+                    f"Exa crawl partial failure for {debug_context}: {success_count}/{total_count} succeeded"
+                )
+            else:
+                self.debug.crawl(
+                    f"Exa crawl successful for {debug_context}: {success_count} sources"
+                )
+
+            return crawled_results.results
+        except Exception as e:
+            self.debug.error(f"Exa crawl failed for {debug_context}: {str(e)[:100]}...")
+            return []
 
     # Main
     async def routed_search(
@@ -604,7 +686,17 @@ class Tools:
         __request__: Optional[Any] = None,
         __user__: Optional[Dict] = None,
         __messages__: Optional[List[Dict]] = None,
+        image_context: Optional[str] = None,
     ) -> dict:
+        # Check if Exa is available first
+        if not EXA_AVAILABLE:
+            error_msg = "❌ Search tool unavailable: exa_py module not installed. Please install with: pip install exa_py"
+            self.debug.error(error_msg)
+            return {
+                "content": error_msg,
+                "show_source": False,
+            }
+
         # Update debug state based on current valve setting
         self.debug.enabled = self.valves.debug_enabled
         self.debug.flow("Starting SearchRouterTool processing")
@@ -614,6 +706,13 @@ class Tools:
                 await __event_emitter__(
                     {"type": "status", "data": {"description": desc, "done": done}}
                 )
+
+        # Add debug info about the tool being called
+        self.debug.flow(f"ExaSearch tool called with query: {query[:100]}...")
+        if __user__:
+            self.debug.data("User ID", __user__.get("id", "unknown"))
+        if __messages__:
+            self.debug.data("Message count", len(__messages__))
 
         messages = __messages__ or []
         last_user_message = get_last_user_message(messages)
@@ -635,6 +734,11 @@ class Tools:
             role = m.get("role", "").upper()
             convo_snippet_parts.append(f"{role}: {text_content!r}")
         convo_snippet = "\n".join(convo_snippet_parts)
+
+        # Include image context if provided by autotoo
+        if image_context:
+            self.debug.flow("Image context provided by autotoo, enhancing search")
+            convo_snippet += f"\n\nIMAGE CONTEXT: {image_context}"
 
         # The definitive query for the router now includes history
         router_query = f"Conversation History:\n{convo_snippet}\n\nLatest User Query:\n'{last_user_message}'"
@@ -760,7 +864,7 @@ class Tools:
                 refiner_payload = {
                     "model": self.valves.quick_search_model,
                     "messages": [
-                        {"role": "system", "content": SQR_PROMPT_TEMPLATE},
+                        {"role": "system", "content": IMPROVED_SQR_PROMPT_TEMPLATE},
                         {"role": "user", "content": refiner_user_prompt},
                     ],
                     "stream": False,
@@ -789,118 +893,109 @@ class Tools:
                 report.refined_query = refined_query
 
                 await _status(f'Searching for: "{refined_query}"')
-                search_data = exa.search(
-                    refined_query,
-                    num_results=self.valves.quick_urls_to_search,
-                    use_autoprompt=True,
+
+                # Use safe search method
+                search_results = await self._safe_exa_search(
+                    refined_query, self.valves.quick_urls_to_search, "STANDARD search"
                 )
-                report.urls_found = [res.url for res in search_data.results]
-                self.debug.search(f"Found {len(report.urls_found)} search results")
 
-                crawl_candidates = search_data.results[
-                    : self.valves.quick_queries_to_crawl
-                ]
-
-                if not crawl_candidates:
+                if not search_results:
                     final_result = "My search found no results to read. Please try a different query."
-                    self.debug.search("No crawl candidates found")
+                    self.debug.search("No search results found")
                 else:
-                    domains = [
-                        urlparse(res.url).netloc.replace("www.", "")
-                        for res in crawl_candidates
+                    report.urls_found = [res.url for res in search_results]
+                    self.debug.search(f"Found {len(report.urls_found)} search results")
+
+                    crawl_candidates = search_results[
+                        : self.valves.quick_queries_to_crawl
                     ]
-                    await _status(f"Reading from: {', '.join(domains)}")
-                    self.debug.crawl(
-                        f"Crawling {len(crawl_candidates)} URLs from domains: {domains}"
-                    )
 
-                    ids_to_crawl = [res.id for res in crawl_candidates]
-                    report.urls_crawled = [res.url for res in crawl_candidates]
-                    crawled_results = exa.get_contents(ids_to_crawl)
+                    if not crawl_candidates:
+                        final_result = "My search found no results to read. Please try a different query."
+                        self.debug.search("No crawl candidates found")
+                    else:
+                        domains = [
+                            urlparse(res.url).netloc.replace("www.", "")
+                            for res in crawl_candidates
+                        ]
+                        await _status(f"Reading from: {', '.join(domains)}")
+                        self.debug.crawl(
+                            f"Crawling {len(crawl_candidates)} URLs from domains: {domains}"
+                        )
 
-                    # Log crawl success/failure details
-                    attempted_count = len(crawl_candidates)
-                    successful_count = len(crawled_results.results)
-                    failed_count = attempted_count - successful_count
+                        ids_to_crawl = [res.id for res in crawl_candidates]
+                        report.urls_crawled = [res.url for res in crawl_candidates]
 
-                    # Populate report with success/failure data
-                    successful_urls = [res.url for res in crawled_results.results]
-                    report.urls_successful = successful_urls
+                        # Use safe crawl method
+                        crawled_results = await self._safe_exa_crawl(
+                            ids_to_crawl, "STANDARD search"
+                        )
 
-                    if failed_count > 0:
-                        report.urls_failed = [
+                        # Populate report with success/failure data
+                        successful_urls = [res.url for res in crawled_results]
+                        report.urls_successful = successful_urls
+
+                        failed_urls = [
                             url
                             for url in report.urls_crawled
                             if url not in successful_urls
                         ]
-                        self.debug.error(
-                            f"Crawl failures: {failed_count}/{attempted_count} URLs failed"
-                        )
-                        self.debug.data("Failed URLs", report.urls_failed)
-                        self.debug.data("Successful URLs", successful_urls)
-                    else:
-                        report.urls_failed = []
-                        self.debug.crawl(
-                            f"All {successful_count}/{attempted_count} URLs crawled successfully"
-                        )
+                        report.urls_failed = failed_urls
 
-                    await _status(
-                        f"Synthesizing answer from {len(crawled_results.results)} sources..."
-                    )
-                    context = "\n\n".join(
-                        [
-                            f"## Source: {res.url}\n\n{res.text}"
-                            for res in crawled_results.results
-                        ]
-                    )
-                    context = context[: self.valves.quick_max_context_chars]
-
-                    # More detailed synthesis logging and report population
-                    sources_used = len(crawled_results.results)
-                    context_length = len(context)
-                    was_truncated = (
-                        len(
-                            "\n\n".join(
+                        if crawled_results:
+                            await _status(
+                                f"Synthesizing answer from {len(crawled_results)} sources..."
+                            )
+                            context = "\n\n".join(
                                 [
                                     f"## Source: {res.url}\n\n{res.text}"
-                                    for res in crawled_results.results
+                                    for res in crawled_results
                                 ]
                             )
-                        )
-                        > self.valves.quick_max_context_chars
-                    )
+                            context = context[: self.valves.quick_max_context_chars]
 
-                    # Populate report metrics
-                    report.context_length = context_length
-                    report.was_truncated = was_truncated
+                            # Populate report metrics
+                            report.context_length = len(context)
+                            report.was_truncated = (
+                                len(
+                                    "\n\n".join(
+                                        [
+                                            f"## Source: {res.url}\n\n{res.text}"
+                                            for res in crawled_results
+                                        ]
+                                    )
+                                )
+                                > self.valves.quick_max_context_chars
+                            )
 
-                    synthesis_msg = f"Generated context with {context_length} characters from {sources_used} sources"
-                    if was_truncated:
-                        synthesis_msg += f" (truncated from max {self.valves.quick_max_context_chars})"
-                    if sources_used < attempted_count:
-                        synthesis_msg += f" (originally attempted {attempted_count})"
+                            self.debug.synthesis(
+                                f"Generated context with {len(context)} characters from {len(crawled_results)} sources"
+                            )
 
-                    self.debug.synthesis(synthesis_msg)
-
-                    summarizer_user_prompt = f"## Context:\n{context}\n\n## User's Question:\n{last_user_message}"
-                    report.final_prompt = f"SYSTEM: {QUICK_SUMMARIZER_PROMPT}\nUSER: {summarizer_user_prompt}"
-                    summarizer_payload = {
-                        "model": self.valves.quick_search_model,
-                        "messages": [
-                            {"role": "system", "content": QUICK_SUMMARIZER_PROMPT},
-                            {"role": "user", "content": summarizer_user_prompt},
-                        ],
-                        "stream": False,
-                    }
-                    final_res = await generate_with_retry(
-                        request=__request__,
-                        form_data=summarizer_payload,
-                        user=user_obj,
-                        debug=self.debug,
-                    )
-                    final_result = final_res["choices"][0]["message"]["content"]
-                    await _status("Standard search complete.", done=True)
-                    self.debug.synthesis("STANDARD search synthesis complete")
+                            summarizer_user_prompt = f"## Context:\n{context}\n\n## User's Question:\n{last_user_message}"
+                            report.final_prompt = f"SYSTEM: {QUICK_SUMMARIZER_PROMPT}\nUSER: {summarizer_user_prompt}"
+                            summarizer_payload = {
+                                "model": self.valves.quick_search_model,
+                                "messages": [
+                                    {
+                                        "role": "system",
+                                        "content": QUICK_SUMMARIZER_PROMPT,
+                                    },
+                                    {"role": "user", "content": summarizer_user_prompt},
+                                ],
+                                "stream": False,
+                            }
+                            final_res = await generate_with_retry(
+                                request=__request__,
+                                form_data=summarizer_payload,
+                                user=user_obj,
+                                debug=self.debug,
+                            )
+                            final_result = final_res["choices"][0]["message"]["content"]
+                            await _status("Standard search complete.", done=True)
+                            self.debug.synthesis("STANDARD search synthesis complete")
+                        else:
+                            final_result = "I found search results but was unable to read any content from them. Please try a different query."
 
             except Exception as e:
                 self.debug.error(f"STANDARD search path failed with an exception: {e}")
@@ -934,7 +1029,7 @@ class Tools:
                 refiner_payload = {
                     "model": self.valves.complete_agent_model,
                     "messages": [
-                        {"role": "system", "content": SQR_PROMPT_TEMPLATE},
+                        {"role": "system", "content": IMPROVED_SQR_PROMPT_TEMPLATE},
                         {"role": "user", "content": refiner_user_prompt},
                     ],
                     "stream": False,
@@ -1126,49 +1221,48 @@ class Tools:
                     for t_query in targeted_queries:
                         await _status(f'Following new lead: "{t_query[:50]}..."')
                         self.debug.search(f'Executing targeted query: "{t_query}"')
-                        search_results = exa.search(
+
+                        # Use safe methods for better error handling
+                        search_results = await self._safe_exa_search(
                             t_query,
-                            num_results=self.valves.complete_urls_to_search_per_query,
-                            use_autoprompt=True,
+                            self.valves.complete_urls_to_search_per_query,
+                            f"targeted query: {t_query[:30]}...",
                         )
+
+                        if not search_results:
+                            self.debug.search(
+                                f"No search results found for query: {t_query[:50]}..."
+                            )
+                            continue
+
                         ids_to_crawl = [
                             res.id
-                            for res in search_results.results[
+                            for res in search_results[
                                 : self.valves.complete_queries_to_crawl
                             ]
                         ]
+
                         if not ids_to_crawl:
                             self.debug.search(
                                 f"No crawl candidates found for query: {t_query[:50]}..."
                             )
                             continue
 
-                        # Track attempted vs successful crawls for targeted queries
-                        attempted_targeted_count = len(ids_to_crawl)
-                        crawled_results = exa.get_contents(ids_to_crawl)
-                        successful_targeted_count = len(crawled_results.results)
-                        failed_targeted_count = (
-                            attempted_targeted_count - successful_targeted_count
+                        # Use safe crawl method
+                        crawled_results = await self._safe_exa_crawl(
+                            ids_to_crawl, f"targeted query: {t_query[:30]}..."
                         )
 
-                        crawled_urls = [res.url for res in crawled_results.results]
-
-                        if failed_targeted_count > 0:
-                            self.debug.error(
-                                f"Targeted crawl failures: {failed_targeted_count}/{attempted_targeted_count} URLs failed for query: {t_query[:50]}..."
-                            )
-                            self.debug.crawl(
-                                f"Crawled {successful_targeted_count} URLs (attempted {attempted_targeted_count}) for query: {t_query[:50]}..."
-                            )
-                        else:
-                            self.debug.crawl(
-                                f"Crawled {successful_targeted_count} URLs for query: {t_query[:50]}..."
-                            )
+                        crawled_urls = [res.url for res in crawled_results]
+                        self.debug.crawl(
+                            f"Crawled {len(crawled_results)} URLs for query: {t_query[:50]}..."
+                        )
 
                         report.add_search_to_iteration(
                             iteration_num, t_query, crawled_urls
                         )
-                        for res in crawled_results.results:
+
+                        for res in crawled_results:
                             if res.url not in notepad:
                                 notepad[res.url] = (
                                     f"## Content from '{res.title}' ({res.url}):\n{' '.join(res.text.split())}"
@@ -1257,13 +1351,64 @@ class Tools:
         }
 
 
-# Final tool definition
-class ExaSearch:
-    def __init__(self):
-        self.tools = Tools()
-        self.valves = self.tools.valves
+# Final tool definition for OpenWebUI
+class Tools:
+    """Main class that OpenWebUI will use"""
 
-    def __call__(
+    def __init__(self):
+        self.tools_instance = ToolsInternal()
+        # Expose valves directly at the top level for OpenWebUI
+        self.valves = self.tools_instance.valves
+
+    class Valves(BaseModel):
+        exa_api_key: str = Field(default="", description="Your Exa API key.")
+        router_model: str = Field(
+            default="gpt-4o-mini",
+            description="LLM for the initial CRAWL/STANDARD/COMPLETE decision.",
+        )
+        quick_search_model: str = Field(
+            default="gpt-4o-mini",
+            description="Single 'helper' model for all tasks in the STANDARD path (refining, summarizing).",
+        )
+        complete_agent_model: str = Field(
+            default="gpt-4-turbo",
+            description="The 'smart' model for all agentic steps in the COMPLETE path (refining, deciding, query generation).",
+        )
+        complete_summarizer_model: str = Field(
+            default="gpt-4-turbo",
+            description="Dedicated high-quality model for the final summary in the COMPLETE path.",
+        )
+        quick_urls_to_search: int = Field(
+            default=5, description="Number of URLs to fetch for STANDARD search."
+        )
+        quick_queries_to_crawl: int = Field(
+            default=3, description="Number of top URLs to crawl for STANDARD search."
+        )
+        quick_max_context_chars: int = Field(
+            default=8000,
+            description="Maximum total characters of context to feed to the STANDARD search summarizer.",
+        )
+        complete_urls_to_search_per_query: int = Field(
+            default=5,
+            description="Number of URLs to fetch for each targeted query in COMPLETE search.",
+        )
+        complete_queries_to_crawl: int = Field(
+            default=3,
+            description="Number of top URLs to crawl for each targeted query in COMPLETE search.",
+        )
+        complete_queries_to_generate: int = Field(
+            default=3,
+            description="Number of new targeted queries to generate per iteration.",
+        )
+        complete_max_search_iterations: int = Field(
+            default=2, description="Maximum number of research loops for the agent."
+        )
+        debug_enabled: bool = Field(
+            default=False,
+            description="Enable detailed debug logging for troubleshooting search operations.",
+        )
+
+    async def routed_search(
         self,
         query: str,
         __event_emitter__: Optional[Callable[[dict], Awaitable[None]]] = None,
@@ -1271,8 +1416,14 @@ class ExaSearch:
         __user__: Optional[Dict] = None,
         __messages__: Optional[List[Dict]] = None,
     ) -> dict:
-        return asyncio.run(
-            self.tools.routed_search(
-                query, __event_emitter__, __request__, __user__, __messages__
-            )
+        # Create debug instance with consistent formatting
+        debug = Debug(enabled=self.valves.debug_enabled)
+        debug.flow("routed_search function called")
+        debug.data("Query", query[:50] + "..." if len(query) > 50 else query)
+
+        # Sync valve settings to internal instance
+        self.tools_instance.valves = self.valves
+
+        return await self.tools_instance.routed_search(
+            query, __event_emitter__, __request__, __user__, __messages__
         )

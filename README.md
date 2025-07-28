@@ -1,7 +1,9 @@
 # OpenWebUI Tooling Suite Documentation  
 [中文 Readme](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/blob/main/README_zh.md) | Skip to [Installation & Usage](#4-installation--usage)
 
+
 ---
+[OpenWebUI Mirror - AutoTool Router](https://openwebui.com/f/sdjfhsud/auto_tool_router) | [OpenWebUI Mirror - Exa Search](https://openwebui.com/t/sdjfhsud/exa_router_search)
 
 ## 1. Background & Goals  
 Standard OpenWebUI models are pretty “passive” by default:  

@@ -72,12 +72,12 @@ docker restart open-webui
 
 1. **Install Auto Tool Selector (Function)**:
    - Go to **Admin Settings → Functions → New Function**
-   - Copy and paste the contents of `autotool.py`
+   - Copy and paste the contents of `auto_tool_selector.py`
    - Save the function
 
 2. **Install Exa Search Router (Tool)** *(Optional)*:
    - Go to **Workspace → Tools → New Tool**
-   - Copy and paste the contents of `exasearch.py`
+   - Copy and paste the contents of `exa_router_search.py`
    - **Important**: Set Tool ID to `exa_router_search`
    - Save the tool
 

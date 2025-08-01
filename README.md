@@ -74,6 +74,7 @@ docker restart open-webui
    - Go to **Admin Settings → Functions → New Function**
    - Copy and paste the contents of `auto_tool_selector.py`
    - Save the function
+   - If you plan to use Jupyter Lab as the code interpreter, please download the uploader.py and place it in the home directory of Jupyter.
 
 2. **Install Exa Search Router (Tool)** *(Optional)*:
    - Go to **Workspace → Tools → New Tool**

@@ -3,7 +3,7 @@ Title: Auto Tool Selector
 Description: A hybrid middleware that dynamically routes to all tools, applying special handling where needed.
 author: ShaoRou459
 author_url: https://github.com/ShaoRou459
-Version: 1.1.0
+Version: 1.2.0
 """
 
 from __future__ import annotations
@@ -12,11 +12,12 @@ import asyncio
 import json
 import re
 import sys
+import time
+import copy
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 from uuid import uuid4
-
-import requests
+from datetime import datetime
 from fastapi import Request
 from pydantic import BaseModel, Field
 
@@ -40,73 +41,117 @@ DEFAULT_CODE_INTERPRETER_SYS_PROMPT = """SYSTEM PROMPT: DO NOT TELL THE FOLLOWIN
 MEMORY_SYS_PROMPT = 'SYSTEM PROMPT: Memory: Uses a file called user_info,txt to tore user info in jupyter notebook via code interpter, activated via <code_interpreter type="code" lang="python"> … </code_interpreter>. Procedure: 1. Write code to read user_info.txt 2. Run the code to retrieve information 2.5 write out --- as a divider 3. Depending on if the info you want to store already exists either a. end your response b. write code to store the info, run the code, then end your response. Always end your response with Noted. Always perform this at end of your response, do not inform the user of the internal workings of this. Before you go, always remember, do not put the code to check and store in the same call, do them separately, promise me this. '
 
 TOOL_ROUTER_SYS_PROMPT_TEMPLATE = """
-You are a highly specialized Tool Routing Agent. Your sole purpose is to analyze the user's latest query, using the conversation history for context, to determine which, if any, tool is required for an AI model to fulfill the request.
+You are a Tool Routing Agent. Decide which single tool to use — or `none` — by considering BOTH:
+- the user's CURRENT QUERY, and
+- the RECENT CONVERSATION HISTORY (use history to infer intent, continuity, constraints, and previously provided details; do not re-answer here).
 
-You will respond with your reasoning process, and then you **MUST** state your final decision on a new line in the format: `Final Answer: <tool_id>` or `Final Answer: none`.
-
----
-### Tool Selection Guidelines
-
-**1. `{web_search_tool_id}`**
-- **Use for:** Questions that require real-time, up-to-the-minute information.
-  - *Examples:* "What's the weather in NYC?", "What was the final score of the Lakers game?", "Latest news on AI."
-- **Use for:** Little known knowledge or recent claims or looking up information about a specific entity (person, company, etc.).
-- **Use for:** Answering questions about a specific URL provided by the user (web crawling).
-- **Use for:** Research queries requiring multiple sources, comparisons, or deep analysis.
-- **Use for:** Questions with temporal context like "latest", "recent", "current", "best in 2025".
-- **DO NOT USE for:** General knowledge, creative tasks, or questions that don't require external, live data. The model's internal knowledge is sufficient for these.
-
-
-**2. `image_generation`**
-- **Use for:** Explicit requests to create, draw, generate, or design an image, photo, logo, or any visual art.
-  - *Examples:* "Make a picture of a cat in a spacesuit.", "I need a logo for my coffee shop."
-
-**3. `code_interpreter`**
-- Allows access to a jupyter notebook env for the AI assistant to run code and get results. 
-- **Use for:**
-  - For when the user gives a task that requires the *excution* of python code.
-  - For when the user gives a task that involves File manipulation WITHIN the JUPYTER ENV: Such as storing files, reading files etc. 
-  - DO NOT USE FOR: Non python tasks, tasks that only involve code generation (code does not need to be excuted for AI assistant to see), file genereration tasks (not storing anything permantly)
-**4. `memory`**
-- **Use for:** Explicit requests to remember or recall specific, simple pieces of information within the current conversation.
-  - *Examples:* "Remember my name is Peter.", "What was the idea I mentioned earlier about the marketing plan?"
-- **DO NOT USE for:** File operations or complex data recall (that's for `code_interpreter`).
+You must show brief reasoning, then output exactly one final line: `Final Answer: <tool_id>` or `Final Answer: none`.
 
 ---
-### **How to Use Conversation History**
-
-The user's latest message might be short or use pronouns (like "it", "that", "them"). You **must** look at the conversation history to understand what they are referring to. The history provides the *subject* for the action in the latest query.
-
--   If the user says, "Graph that for me," check the history to see what data "that" refers to.
--   If the user says, "Save it as a text file," check the history to find the content for "it."
+### How to Use Context
+- Resolve ambiguity in the current query using the history.
+- Detect follow-ups (e.g., "do it again", "use the same method", "as before").
+- Infer missing parameters from prior turns (e.g., topic, format, constraints).
+- If history indicates a non-web creative/coding task, prefer those tools over web search.
 
 ---
+### Pick a Tool
 
-### **Core Principles (VERY IMPORTANT)**
+1) `{web_search_tool_id}`
+- Use when info must be fetched from the web: live/unknown facts, specific URL given (crawl it), multi-source research/comparisons, or temporal queries (latest/recent/current year).
+- Do NOT use for knowledge that AI can answer without web or creative tasks answerable without web.
+- SEARCH LEVEL (append after tool id based on query complexity):
+  - CRAWL → user provided a specific URL to read
+  - STANDARD → single-topic lookup, simple facts, quick answers
+  - COMPLETE → complex multi-part questions, comparisons, research requiring synthesis of diverse sources, comprehensive how‑tos
 
-1.  **Latest Query is the Trigger:** Your decision is always triggered by the user's **most recent message**. The history is for clarification ONLY. Do not call a tool just because it was used in a previous turn. Your choice must be for the user's LATEST query.
-2.  **Default to `none`:** When in doubt, choose `none`. It is significantly better to not use a tool than to use one incorrectly. The model should answer directly if it can.
-3.  **No Vague Guesses:** If the user's request is ambiguous or lacks context, even with history (e.g., "What about this?", "And what now?"), choose `none`. Do not try to guess.
-4.  **Common Sense Is Key:** Always use common sense in making decision, sometimes a tool might seem to be the right call, but use common sense, what does this sutiation really require? What needs to be completed first?
+2) `image_generation`
+- Use for explicit requests to create/design an image or logo.
+
+3) `code_interpreter`
+- Use only to execute Python or manipulate files inside the notebook env. Not for pure code generation or non-Python tasks.
+
+4) `memory`
+- Use to remember/recall simple facts within this conversation. Not for file ops or complex data recall.
+
 ---
-### Final Output Format
+### Smart Search Level Selection
+- STANDARD: "What is X?", "When did Y happen?", "Who is Z?", simple factual queries
+- COMPLETE: "Compare A vs B", "How to do X comprehensively", "Explain the full process of Y", "Research Z and provide detailed analysis", multi‑faceted questions, technical tutorials
+
+---
+### Core Rules
+- Latest user message triggers the decision; HISTORY MODIFIES/INFORMS the decision.
+- When in doubt, choose `none` and answer directly.
+- Be intelligent about search depth — complex questions deserve COMPLETE research.
+- Use common sense and err toward deeper research for substantive queries.
+
+---
+### Output Format (strict)
 <think>
-- Identify user intent
-- Identify user needs
-- Pick the user need that must be stastifyed before the others
-- Identify which tool best suits the user's need
-- Double check if the tool needs to be used
-- Done
+- Query complexity (simple/complex)
+- Need (≤8 words)
+- Best approach using context (≤8 words)
 </think>
-Final Answer: <The chosen tool_id or none>
----
-ONLY EVER RETURN Final Answer: THE TOOL'S ID, NEVER PUT IT IN ANY SORT OF FORMMATING OR QUOTES. 
+Final Answer: <tool_id or none>
+If `{web_search_tool_id}` is chosen, you MUST append a LEVEL token: CRAWL | STANDARD | COMPLETE.
+Example: `Final Answer: {web_search_tool_id} COMPLETE`
+ONLY return the Final Answer line exactly as shown (no quotes/formatting).
 """
 
 
-# ─── Debug System ────────────────────────────────────────────────────────────
+# ─── Enhanced Debug System ──────────────────────────────────────────────────
+from dataclasses import dataclass, field
+from contextlib import contextmanager
+
+@dataclass
+class DebugMetrics:
+    """Collects and tracks metrics throughout the debug session."""
+    
+    # Timing metrics
+    start_time: float = field(default_factory=time.perf_counter)
+    operation_times: Dict[str, float] = field(default_factory=dict)
+    total_operations: int = 0
+    
+    # Tool routing metrics
+    tool_decisions: int = 0
+    tool_activations: int = 0
+    handler_calls: int = 0
+    
+    # Vision processing metrics
+    images_processed: int = 0
+    vision_calls: int = 0
+    vision_total_time: float = 0.0
+    
+    # LLM metrics
+    llm_calls: int = 0
+    llm_total_time: float = 0.0
+    llm_failures: int = 0
+    
+    # Error tracking
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    
+    def add_operation_time(self, operation: str, duration: float) -> None:
+        """Add timing data for an operation."""
+        self.operation_times[operation] = self.operation_times.get(operation, 0) + duration
+        self.total_operations += 1
+    
+    def add_error(self, error: str) -> None:
+        """Add an error to tracking."""
+        self.errors.append(f"[{datetime.now().strftime('%H:%M:%S')}] {error}")
+    
+    def add_warning(self, warning: str) -> None:
+        """Add a warning to tracking."""
+        self.warnings.append(f"[{datetime.now().strftime('%H:%M:%S')}] {warning}")
+    
+    def get_total_time(self) -> float:
+        """Get total elapsed time since start."""
+        return time.perf_counter() - self.start_time
+
+
 class Debug:
-    """Structured debug logging system for AutoToolSelector."""
+    """Enhanced structured debug logging system for AutoToolSelector with metrics collection."""
 
     # ANSI color codes
     _COLORS = {
@@ -119,65 +164,202 @@ class Debug:
         "RED": "\x1b[91m",
         "MAGENTA": "\x1b[95m",
         "BLUE": "\x1b[94m",
+        "WHITE": "\x1b[97m",
+        "ORANGE": "\x1b[38;5;208m",
+        "PURPLE": "\x1b[38;5;129m",
     }
 
-    def __init__(self, enabled: bool = False):
+    def __init__(self, enabled: bool = False, tool_name: str = "AutoToolSelector"):
         self.enabled = enabled
+        self.tool_name = tool_name
+        self.metrics = DebugMetrics()
+        self._session_id = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
 
-    def _format_msg(self, category: str, message: str, color: str = "CYAN") -> str:
-        """Format a debug message with consistent styling."""
+    def _get_timestamp(self) -> str:
+        """Get formatted timestamp."""
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]  # Include milliseconds
+
+    def _format_msg(self, category: str, message: str, color: str = "CYAN", include_timestamp: bool = True) -> str:
+        """Format a debug message with consistent styling and optional timestamp."""
         if not self.enabled:
             return ""
 
-        timestamp = ""  # Can add timestamp if needed
-        prefix = f"{self._COLORS['MAGENTA']}{self._COLORS['BOLD']}[AutoToolSelector]{self._COLORS['RESET']}"
-        cat_colored = f"{self._COLORS[color]}{self._COLORS['BOLD']}{category}{self._COLORS['RESET']}"
+        timestamp = f"{self._COLORS['DIM']}[{self._get_timestamp()}]{self._COLORS['RESET']} " if include_timestamp else ""
+        prefix = f"{self._COLORS['MAGENTA']}{self._COLORS['BOLD']}[{self.tool_name}:{self._session_id}]{self._COLORS['RESET']}"
+        cat_colored = f"{self._COLORS[color]}{self._COLORS['BOLD']}{category:<12}{self._COLORS['RESET']}"
         msg_colored = f"{self._COLORS[color]}{message}{self._COLORS['RESET']}"
 
-        return f"{prefix} {cat_colored}: {msg_colored}"
+        return f"{timestamp}{prefix} {cat_colored}: {msg_colored}"
 
-    def _log(self, category: str, message: str, color: str = "CYAN") -> None:
-        """Internal logging method."""
+    def _log(self, category: str, message: str, color: str = "CYAN", track_metric: bool = True) -> None:
+        """Internal logging method with optional metrics tracking."""
         if self.enabled:
             formatted = self._format_msg(category, message, color)
             if formatted:
                 print(formatted, file=sys.stderr)
+            
+            if track_metric:
+                self.metrics.total_operations += 1
+
+    @contextmanager
+    def timer(self, operation_name: str):
+        """Context manager for timing operations."""
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            duration = time.perf_counter() - start
+            self.metrics.add_operation_time(operation_name, duration)
+            if self.enabled:
+                self._log("TIMING", f"{operation_name} completed in {duration:.3f}s", "ORANGE", track_metric=False)
+
+    def start_session(self, description: str = "") -> None:
+        """Start a new debug session."""
+        self.metrics = DebugMetrics()  # Reset metrics
+        session_msg = f"Debug session started" + (f": {description}" if description else "")
+        self._log("SESSION", session_msg, "PURPLE", track_metric=False)
+        self._log("SESSION", f"Session ID: {self._session_id}", "DIM", track_metric=False)
 
     def router(self, message: str) -> None:
         """Log router decision making."""
         self._log("ROUTER", message, "BLUE")
+        self.metrics.tool_decisions += 1
 
     def vision(self, message: str) -> None:
         """Log vision processing."""
         self._log("VISION", message, "GREEN")
+        self.metrics.vision_calls += 1
 
     def tool(self, message: str) -> None:
         """Log tool activation."""
         self._log("TOOL", message, "YELLOW")
+        self.metrics.tool_activations += 1
 
     def handler(self, message: str) -> None:
         """Log special handler activity."""
         self._log("HANDLER", message, "MAGENTA")
+        self.metrics.handler_calls += 1
 
     def error(self, message: str) -> None:
         """Log errors and warnings."""
         self._log("ERROR", message, "RED")
+        self.metrics.add_error(message)
+
+    def warning(self, message: str) -> None:
+        """Log warnings."""
+        self._log("WARNING", message, "YELLOW")
+        self.metrics.add_warning(message)
 
     def flow(self, message: str) -> None:
         """Log general workflow steps."""
         self._log("FLOW", message, "CYAN")
 
-    def data(self, label: str, data: Any, truncate: int = 80) -> None:
-        """Log data with optional truncation."""
+    def data(self, label: str, data: Any, truncate: Optional[int] = None) -> None:
+        """Log data with optional truncation. Set truncate=None to disable."""
         if not self.enabled:
             return
-
-        if isinstance(data, str) and len(data) > truncate:
-            data_str = f"{data[:truncate]}..."
-        else:
-            data_str = str(data)
-
+        data_str = str(data)
+        if truncate is not None and isinstance(data, str) and len(data_str) > truncate:
+            data_str = f"{data_str[:truncate]}..."
         self._log("DATA", f"{label} → {data_str}", "DIM")
+
+    def llm_call(self, model: str, success: bool = True, duration: float = 0.0) -> None:
+        """Track LLM call metrics."""
+        self.metrics.llm_calls += 1
+        self.metrics.llm_total_time += duration
+        if not success:
+            self.metrics.llm_failures += 1
+        
+        status = "✓" if success else "✗"
+        self._log("LLM", f"{status} {model} ({duration:.3f}s)", "GREEN" if success else "RED")
+
+    def vision_metrics(self, images: int = 0, duration: float = 0.0) -> None:
+        """Update vision-related metrics."""
+        self.metrics.images_processed += images
+        self.metrics.vision_total_time += duration
+
+    def metrics_summary(self) -> None:
+        """Display comprehensive metrics summary at the end of execution."""
+        if not self.enabled:
+            return
+        
+        total_time = self.metrics.get_total_time()
+        
+        # Build metrics report
+        report_lines = [
+            "",
+            "═" * 80,
+            f"📊 EXECUTION METRICS SUMMARY - {self.tool_name} (Session: {self._session_id})",
+            "═" * 80,
+            "",
+            "⏱️  TIMING METRICS:",
+            f"   Total Execution Time: {total_time:.3f}s",
+            f"   Total Operations: {self.metrics.total_operations}",
+        ]
+        
+        if self.metrics.operation_times:
+            report_lines.append("   Operation Breakdown:")
+            for op, duration in sorted(self.metrics.operation_times.items(), key=lambda x: x[1], reverse=True):
+                percentage = (duration / total_time) * 100 if total_time > 0 else 0
+                report_lines.append(f"     • {op}: {duration:.3f}s ({percentage:.1f}%)")
+        
+        report_lines.extend([
+            "",
+            "🔧 TOOL ROUTING METRICS:",
+            f"   Tool Decisions Made: {self.metrics.tool_decisions}",
+            f"   Tool Activations: {self.metrics.tool_activations}",
+            f"   Handler Calls: {self.metrics.handler_calls}",
+        ])
+        
+        if self.metrics.vision_calls > 0:
+            report_lines.extend([
+                "",
+                "👁️  VISION METRICS:",
+                f"   Vision Calls: {self.metrics.vision_calls}",
+                f"   Images Processed: {self.metrics.images_processed}",
+                f"   Vision Total Time: {self.metrics.vision_total_time:.3f}s",
+                f"   Average Vision Time: {(self.metrics.vision_total_time / self.metrics.vision_calls):.3f}s" if self.metrics.vision_calls > 0 else "   Average Vision Time: N/A",
+            ])
+        
+        if self.metrics.llm_calls > 0:
+            report_lines.extend([
+                "",
+                "🤖 LLM METRICS:",
+                f"   Total LLM Calls: {self.metrics.llm_calls}",
+                f"   LLM Total Time: {self.metrics.llm_total_time:.3f}s",
+                f"   LLM Failures: {self.metrics.llm_failures}",
+                f"   Average LLM Time: {(self.metrics.llm_total_time / self.metrics.llm_calls):.3f}s" if self.metrics.llm_calls > 0 else "   Average LLM Time: N/A",
+            ])
+        
+        if self.metrics.errors or self.metrics.warnings:
+            report_lines.extend([
+                "",
+                "⚠️  ISSUES SUMMARY:",
+                f"   Errors: {len(self.metrics.errors)}",
+                f"   Warnings: {len(self.metrics.warnings)}",
+            ])
+            
+            if self.metrics.errors:
+                report_lines.append("   Recent Errors:")
+                for error in self.metrics.errors[-3:]:  # Show last 3 errors
+                    report_lines.append(f"     • {error}")
+            
+            if self.metrics.warnings:
+                report_lines.append("   Recent Warnings:")
+                for warning in self.metrics.warnings[-3:]:  # Show last 3 warnings
+                    report_lines.append(f"     • {warning}")
+        
+        report_lines.extend([
+            "",
+            "═" * 80,
+            ""
+        ])
+        
+        # Print the metrics report
+        metrics_report = "\n".join(report_lines)
+        formatted = self._format_msg("METRICS", metrics_report, "PURPLE", include_timestamp=False)
+        if formatted:
+            print(formatted, file=sys.stderr)
 
 
 # Legacy compatibility - will be replaced
@@ -277,10 +459,16 @@ async def _generate_prompt_and_desc(
         "stream": False,
     }
 
+    start_time = time.perf_counter()
     try:
         res = await generate_chat_completion(
             request=request, form_data=payload, user=user
         )
+        duration = time.perf_counter() - start_time
+        
+        if debug:
+            debug.llm_call(model, success=True, duration=duration)
+        
         obj = _parse_json_fuzzy(res["choices"][0]["message"]["content"], debug)
         prompt = obj.get("prompt", user_query)
         description = obj.get("description", "Image generated from conversation.")
@@ -288,7 +476,9 @@ async def _generate_prompt_and_desc(
             debug.handler(f"Router prompt → {prompt[:60]}… | desc: {description}")
         return prompt, description
     except Exception as exc:
+        duration = time.perf_counter() - start_time
         if debug:
+            debug.llm_call(model, success=False, duration=duration)
             debug.error(f"Prompt‑designer error → {exc}")
         return user_query, "Image generated."
 
@@ -500,8 +690,6 @@ class Filter:
     ) -> dict:
         # Update debug state based on current valve setting
         self.debug.enabled = self.valves.debug_enabled
-        self.debug.flow("Starting AutoToolSelector processing")
-
         if not self.user_valves.auto_tools:
             self.debug.flow("Auto tools disabled, skipping processing")
             return body
@@ -515,6 +703,10 @@ class Filter:
 
         last_user_content_obj = get_last_user_message_content(messages)
         user_message_text, image_urls = _get_message_parts(last_user_content_obj)
+        
+        if self.debug.enabled:
+            self.debug.start_session(f"User message: {user_message_text[:50]}...")
+        self.debug.flow("Starting AutoToolSelector processing")
 
         self.debug.data("User message text", user_message_text)
         self.debug.data("Image URLs found", len(image_urls))
@@ -545,9 +737,9 @@ class Filter:
                 }
             )
 
-            image_descriptions = []
-            for idx, url in enumerate(image_urls):
-                self.debug.vision(f"Analyzing image {idx + 1}/{len(image_urls)}...")
+            start_vision = time.perf_counter()
+
+            async def describe_image(idx: int, url: str) -> str:
                 vision_payload = {
                     "model": self.valves.vision_model,
                     "messages": [
@@ -568,19 +760,33 @@ class Filter:
                         request=__request__, form_data=vision_payload, user=user_obj
                     )
                     description = res["choices"][0]["message"]["content"]
-                    image_descriptions.append(
-                        f"[Image {idx + 1} Context: {description}]"
-                    )
+                    return f"[Image {idx + 1} Context: {description}]"
                 except Exception as e:
                     self.debug.error(f"Vision model failed for image {idx + 1}: {e}.")
-                    image_descriptions.append(
-                        f"[Image {idx + 1} Context: Analysis failed.]"
-                    )
+                    return f"[Image {idx + 1} Context: Analysis failed.]"
+
+            # Limit concurrency to avoid overwhelming the vision model/backend
+            sem = asyncio.Semaphore(3)
+
+            async def sem_wrapper(i: int, u: str) -> str:
+                async with sem:
+                    self.debug.vision(f"Analyzing image {i + 1}/{len(image_urls)}...")
+                    return await describe_image(i, u)
+
+            image_descriptions = await asyncio.gather(
+                *[sem_wrapper(i, u) for i, u in enumerate(image_urls)]
+            )
+
+            elapsed_vision = time.perf_counter() - start_vision
+            self.debug.flow(f"Vision analysis completed in {elapsed_vision:.2f}s for {len(image_urls)} image(s)")
 
             if image_descriptions:
                 full_image_context = "\n\n".join(image_descriptions)
                 # This query is temporary for the router model only
                 routing_query = f"{user_message_text}\n\n{full_image_context}"
+                
+                if self.debug.enabled:
+                    self.debug.vision_metrics(images=len(image_urls), duration=elapsed_vision)
 
         # Always strip images from non-vision models for ALL messages in history
         if __model__ and __model__.get("id") in self.valves.vision_injection_models:
@@ -662,22 +868,35 @@ class Filter:
         self.debug.data("Routing query", routing_query, truncate=120)
 
         try:
+            start_router = time.perf_counter()
             res = await generate_chat_completion(
                 request=__request__, form_data=router_payload, user=user_obj
             )
+            elapsed_router = time.perf_counter() - start_router
+            self.debug.llm_call(router_payload['model'], success=True, duration=elapsed_router)
             llm_response_text = res["choices"][0]["message"]["content"]
             self.debug.data("Router full response", llm_response_text, truncate=200)
 
             decision = "none"
+            decision_tool = "none"
+            decision_mode = None
             for line in llm_response_text.splitlines():
                 if line.lower().strip().startswith("final answer:"):
-                    decision = (
+                    raw = (
                         line.split(":", 1)[1]
                         .strip()
-                        .lower()
                         .replace("'", "")
                         .replace('"', "")
                     )
+                    # Allow optional mode token after tool id
+                    parts = raw.split()
+                    if parts:
+                        decision_tool = parts[0].lower()
+                        decision = decision_tool
+                        if len(parts) > 1:
+                            maybe_mode = parts[-1].upper()
+                            if maybe_mode in {"CRAWL", "STANDARD", "COMPLETE"}:
+                                decision_mode = maybe_mode
                     break
 
             if decision == "none":
@@ -685,11 +904,21 @@ class Filter:
                 if last_line in tool_ids:
                     self.debug.router("Found tool ID on the last line as a fallback.")
                     decision = last_line
+                    decision_tool = last_line
 
-            self.debug.router(f"Extracted decision → {decision}")
+            if decision_mode:
+                self.debug.router(
+                    f"Extracted decision → {decision} with mode {decision_mode}"
+                )
+            else:
+                self.debug.router(f"Extracted decision → {decision}")
 
         except Exception as exc:
+            elapsed_router = time.perf_counter() - start_router if 'start_router' in locals() else 0
+            self.debug.llm_call(router_payload.get('model', 'unknown'), success=False, duration=elapsed_router)
             self.debug.error(f"Router error → {exc}")
+            if self.debug.enabled:
+                self.debug.metrics_summary()
             return body
 
         if decision == "none" and image_analysis_started:
@@ -707,8 +936,8 @@ class Filter:
 
         if decision != "none":
             if last_user_message_idx != -1:
-                # Create a temporary copy of messages for the tool call
-                tool_messages = [m.copy() for m in messages]
+                # Create a deep copy of messages for the tool call to avoid side-effects
+                tool_messages = copy.deepcopy(messages)
 
                 # FIX: Instead of replacing with a string, create a valid text-only content structure.
                 # This ensures the message format is always a list of parts, which is safe.
@@ -773,6 +1002,13 @@ class Filter:
                 return await handler(__request__, tool_body, ctx, user_obj, self.debug)
             else:
                 # Use the tool ID approach for exa_router_search or other tools
+                # Inject per-call mode for exa_router_search so the tool can skip its own router
+                if decision == "exa_router_search" and decision_mode:
+                    # Ensure tool_body has messages and append a system control message
+                    tool_body.setdefault("messages", messages)
+                    tool_body["messages"].append(
+                        {"role": "system", "content": f"[EXA_SEARCH_MODE] {decision_mode}"}
+                    )
                 body["tool_ids"] = [decision]
                 if "messages" in tool_body:
                     body["messages"] = tool_body["messages"]
@@ -780,4 +1016,6 @@ class Filter:
         # Return the original, unmodified body unless vision injection occurred.
         # The vision injection logic already correctly modifies the main `body`.
         self.debug.flow("AutoToolSelector processing completed")
+        if self.debug.enabled:
+            self.debug.metrics_summary()
         return body

@@ -3,7 +3,7 @@ Title: Search Router Tool
 Description: An advanced research tool with a robust retry and graceful failure mechanism.
 author: ShaoRou459
 author_url: https://github.com/ShaoRou459
-Version: 1.1.0
+Version: 1.2.0
 Requirements: exa_py, open_webui
 """
 
@@ -14,6 +14,7 @@ import re
 import sys
 import json
 import asyncio
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -32,140 +33,200 @@ try:
 except ImportError:
     Exa = None
     EXA_AVAILABLE = False
-    print("⚠️ exa_py not installed. Install with: pip install exa_py")
 
 
 # ─── System Prompts ───────────────────────────────────────────────────────────
 
-SEARCH_STRATEGY_PROMPT = """You are a meticulous Search Strategy Analyst. Your role is to analyze the user's query and determine the best search strategy. You must choose one of three strategies: CRAWL, STANDARD, or COMPLETE.\n\n"
-## Strategies:
-- **CRAWL**: Choose this ONLY if the user provides a specific URL and asks a question about it.
-- **STANDARD**: Choose this for most questions, they are questions that can be answered within 5 minutes of a Google Search. This is good for 95% of queries (e.g., 'What is the capital of France?').
-- **COMPLETE**: [DO NOT CHOOSE UNLESS USER EXPLICTLY SAYS TO DO DEEP RESEARCH] Choose this for complex, open-ended, or comparative questions that require gathering information from multiple sources and synthesizing a detailed answer (e.g., 'Compare the pros and cons of React vs. Vue.js').
+SEARCH_STRATEGY_ROUTER_PROMPT_TEMPLATE = """
+You are a search strategy router. Analyze the user's query and conversation context to determine the best search approach.
 
-## Response Format:
-First, think through your reasoning inside a <think> block. Then, on a new line, state your final decision in the format: `Final Answer: <strategy>` where <strategy> is one of CRAWL, STANDARD, or COMPLETE.
+Strategies:
+- CRAWL → only if the user provided a specific URL to read.
+- STANDARD → default; quick lookup answerable with a brief web search (~5 min).
+- COMPLETE → deep, multi-source research or explicit request for in-depth analysis.
 
-### Example:
-User: 'What are the main differences between ARM and x86? Do some deep research'
-
-<think>
-USER EXPLICTLY ASKED FOR A DEEP RESEARCH + The user is asking for a comparison between two complex topics. This is not a simple fact lookup. It will require searching for information on both ARM and x86, then analyzing and comparing them. This clearly falls under the COMPLETE strategy.
-</think>
-Final Answer: COMPLETE
+Respond with your decision on a line starting with "ANSWER: " followed by CRAWL, STANDARD, or COMPLETE.
 """
 
 IMPROVED_SQR_PROMPT_TEMPLATE = f"""
-You are a **Search Query Refinement (SQR) bot**.
+You are a search query optimizer. Convert the user's question into a natural, effective search query that would work well on Google or similar search engines.
 
-Your task is to turn a user's free-form question into an optimized keyword query for semantic search engines.
+Guidelines:
+- Write like a human would search Google - natural phrases, not keyword soup
+- For news/current events: use "latest", "today", "{datetime.now().year}", "recent" naturally
+- For technical topics: include key terms but keep it readable
+- For comparisons: use "vs" or "compared to" 
+- For how-to: start with "how to" or include "guide", "tutorial"
+- Keep it under 10 words when possible
+- Avoid excessive OR operators and site: filters unless truly needed
 
-First, think step-by-step inside a `<think>` block. In your thinking process, you MUST follow the SQR PROTOCOL to construct the query.
-After the `<think>` block, on a new line, output *ONLY* the final, assembled query string.
+Examples:
+- User: "latest news about AI" → "latest AI news {datetime.now().year}"
+- User: "how do I fix my car engine" → "how to fix car engine problems"
+- User: "compare React vs Vue" → "React vs Vue comparison {datetime.now().year}"
+- User: "what is quantum computing" → "quantum computing explained"
 
--------------------------------------------------
-SQR PROTOCOL (to be followed inside the `<think>` block)
-
-STEP 0️⃣ — Context Analysis
-Analyze the conversation history and user query to understand:
-- The core intent and information need
-- Any domain-specific context (technical, academic, news, etc.)
-- The level of detail required (quick facts vs deep research)
-
-STEP 1️⃣ — DATE Token  
-If the user query includes any temporal cue («latest», «new in», «current», «today», «this week», «recent», «2025», etc.), append  
-`(YYYY M D)`, using the current date of {datetime.now().year} {datetime.now().month} {datetime.now().day}.  
-If not, omit the date.
-
-STEP 2️⃣ — Keyword Extraction  
-Pick the *core noun+verb pair* plus any *must-have context words* (brand, city, SKU ID, regulation, version number, etc.).
-Prioritize semantic keywords over exact phrase matching.
-
-STEP 3️⃣ — Domain & Source Targeting  
-Add minimal disambiguation based on query type:  
-- For factual/authoritative info → add «site:gov OR site:edu OR Wikipedia»
-- For technical/dev questions → add «GitHub OR StackOverflow OR docs»
-- For opinions/reviews → add «Reddit OR forums OR reviews»  
-- For news/current events → add «Reuters OR BBC OR AP News»
-- For academic research → add «scholar OR research OR study»
-- For comparisons → add «vs OR comparison OR review»
-
-STEP 4️⃣ — Breadth Enhancement  
-Add 2-3 high-authority sources or semantic variants to improve recall:
-- Use OR operators for synonyms and related terms
-- Include authoritative domain names when relevant
-
-STEP 5️⃣ — Assembly & Optimization
-Assemble parts optimally for semantic search:  
-[CORE QUERY] [DATE] [DOMAIN TARGETING] [BREADTH TERMS]
-Ensure query length stays under 15 words for optimal performance.
-
-STEP 6️⃣ — Final Review
-Verify the query captures the user's intent and will return relevant, authoritative results.
-
--------------------------------------------------
-EXAMPLES
-
-User: "Latest developments in quantum computing breakthroughs"
-<think>
-STEP 0: User wants recent news about quantum computing advances
-STEP 1: "Latest" indicates temporal context, adding current date
-STEP 2: Core terms: "quantum computing breakthroughs developments"  
-STEP 3: This is tech news, so targeting news sources
-STEP 4: Adding breadth with synonyms and authoritative sources
-STEP 5: Assembling for semantic search optimization
-STEP 6: Query captures intent for recent, authoritative quantum computing news
-</think>
-quantum computing breakthroughs developments {datetime.now().year} {datetime.now().month} {datetime.now().day} Reuters BBC TechCrunch OR advances OR progress
-
-User: "Best practices for React hooks performance optimization"
-<think>
-STEP 0: Technical development question about React hooks optimization
-STEP 1: No temporal indicators, omitting date
-STEP 2: Core terms: "React hooks performance optimization best practices"
-STEP 3: Technical question, targeting development resources
-STEP 4: Adding authoritative dev sources and semantic variants
-STEP 5: Assembling for technical search
-STEP 6: Query targets authoritative technical resources
-</think>
-React hooks performance optimization best practices GitHub StackOverflow docs OR patterns OR tips
-
--------------------------------------------------
-END"""
-
-QUICK_SUMMARIZER_PROMPT = "Based ONLY on the following context, organise and cleaup the information so that a person can answer the user's request based off these."
-
-COMPLETE_DECIDER_PROMPT = """You are a meticulous fact-checker and research analyst. Your job is to evaluate if the research is truly complete by comparing the collected context against the user's original, multi-part query.
-**RULES:**
-- If even ONE item from your checklist is missing from the context, you MUST respond with CONTINUE.
-- Only respond with FINISH if you can confidently answer EVERY part of the user's query using ONLY the provided context.
+Output your optimized search query on a line starting with "ANSWER: "
 """
 
-COMPLETE_NOTES_PROMPT = """You are a senior research strategist. Your job is to analyze the research gathered so far and create a 'Research Analysis & Plan' to guide the next steps.
+QUICK_SUMMARIZER_PROMPT = (
+    "Using ONLY the provided context, produce a clear, organized summary that answers the user's request. "
+    "Do NOT include explicit citations, reference markers, or raw URLs unless the user explicitly asked for citations."
+)
 
-1. **Checklist**: Create a checklist of all parts of the user's original request and mark which items have been found in the 'Current Research Context'.
-2. **Analysis**: For the missing items, write a brief analysis of what information is still needed.
-3. **Plan**: Outline a high-level plan for what to search for next."""
+# ── New Iterative Research System Prompts ────────────────────────────────────
 
-COMPLETE_Q_GEN_PROMPT_TEMPLATE = """You are a search query generator. Based on the provided 'Research Analysis & Plan', your job is to create a JSON object with a list of search queries to find the missing information.
+INTRODUCTORY_QUERY_PROMPT = """
+You are an information-seeking specialist. Your job is to generate an introductory search query that helps understand the context and background of what the user is asking about.
 
-IMPORTANT: If the query seems time-sensitive (e.g., 'latest'), add the current date ({date_str}).
-Examples of what you should do: (User input): Latest News --> Latest News ({date_str}) NY Times, South China Morning Post, DW News || (User input): Best Phone deals --> Phone Deals ({date_str}) Reddit, Bestbuy, Amazon, Red Flag Deals
-Don't copy excatly what the example says, but follow the sprit of it! Ensure for whatever you are searching the user gets the widest view of that topic, across the best sources.
-Generate a JSON object with a 'queries' key, containing a list of {query_count} new, distinct search queries based *only* on the plan. Example: `{{"queries": ["query 1", "query 2"]}}`"""
+CURRENT DATE: {current_date}
 
-SYNTHESIS_DECIDER_PROMPT = """You are an output formatting assistant. Based on the user's original request, should the collected research be SYNTHESIZED into a coherent answer, or should the raw text be returned (RETURN_RAW) for the user to review in full?
-- For requests asking the model to 'learn', 'read', 'get documentation', or other similar tasks that imply a need for full context, choose RETURN_RAW.
-- For requests asking 'what is', 'compare', 'explain', or other questions that require a formulated answer, choose SYNTHESIZE.
+This query should be INFORMATIONAL, not trying to answer their question directly. Think of it as "What do I need to know about this topic first?"
+
+Examples:
+- User: "How do I optimize my React app performance?" → "React application performance optimization techniques"
+- User: "What's the latest news about OpenAI?" → "OpenAI company recent developments {current_year}"
+- User: "Compare investment strategies for 2024" → "investment strategies types overview {current_year}"
+
+Output your introductory query on a line starting with "QUERY: "
 """
 
-COMPLETE_SUMMARIZER_PROMPT = """You are an expert synthesizer. Your task is to provide a comprehensive, well-structured answer to the user's original question based on the provided research context and the agent's own notes.
-Use the agent's notes to understand what was considered important, and use the full context to pull the details. First, analyze the user's question to determine the best format for the answer (e.g., a brief summary, a detailed step-by-step guide, a comparative analysis, etc.). Then, formulate your response in that format."""
+OBJECTIVE_SETTING_PROMPT = """
+You are a research strategist. Based on the user's request and the introductory information gathered, set clear research objectives.
+
+CURRENT DATE: {current_date}
+
+Analyze:
+1. What exactly is the user asking for?
+2. What are the key components of their request?
+3. What direction should the research take?
+
+Output a structured analysis with:
+OBJECTIVES: [List 3-5 specific research objectives]
+RESEARCH_DIRECTION: [Brief description of the overall research approach]
+KEY_COMPONENTS: [List the main parts of the user's request that need to be addressed]
+"""
+
+ITERATION_REASONING_PROMPT = """
+You are a research iteration planner. Based on your current knowledge and what you've found so far, reason about what to search for next.
+
+CURRENT DATE: {current_date}
+
+Current situation:
+- Research objectives: {objectives}
+- Previous findings summary: {previous_findings}
+- Iteration: {current_iteration} of {max_iterations}
+
+Your task:
+1. Analyze what you've learned so far
+2. Identify what's still missing
+3. Reason about the best search approach for this iteration
+4. Generate {query_count} diverse, specific search queries
+
+Note: For time-sensitive topics, include {current_year} in your queries when relevant.
+
+Output format:
+ANALYSIS: [What you've learned and what's missing]
+REASONING: [Why these specific searches will help]
+QUERIES: ["query1", "query2", "query3", ...]
+"""
+
+ITERATION_CONCLUSION_PROMPT = """
+You are a research analyst. Summarize what you found in this iteration and determine next steps.
+
+CURRENT DATE: {current_date}
+
+Provide:
+FINDINGS_SUMMARY: [Key information discovered this iteration - be concise but comprehensive]
+PROGRESS_ASSESSMENT: [How much closer are you to answering the user's question?]
+NEXT_STEPS: [What should the next iteration focus on, or should research conclude?]
+DECISION: [CONTINUE or FINISH]
+"""
+
+FINAL_SYNTHESIS_PROMPT = """
+You are an information organizer. Your job is to structure the research findings so the chat model can effectively answer the user's question.
+
+CURRENT DATE: {current_date}
+
+Using the research chain and findings summaries, organize the information into a clear, comprehensive knowledge base that covers:
+- Key facts and findings relevant to the user's question
+- Important context and background information  
+- Relevant developments, especially recent ones when applicable
+- Different perspectives or approaches discovered
+- Any actionable insights or recommendations found
+
+Structure this as organized, factual information that provides the chat model with everything needed to give a complete response to the user's original question. Focus on being comprehensive and well-organized rather than directly answering.
+
+Do NOT include raw URLs or direct quotes from sources.
+"""
+
+SYNTHESIS_DECIDER_PROMPT = """
+You are an output formatting assistant. Decide whether to:
+- RETURN_RAW → when the user wants to read/learn/review full context (docs, articles, longer materials).
+- SYNTHESIZE → when the user asks for an answer/summary/comparison/explanation.
+"""
+
+COMPLETE_SUMMARIZER_PROMPT = """
+You are an expert synthesizer. Provide a comprehensive, well-structured answer to the user's original question using the provided research context and agent notes.
+- Choose the best format (brief summary, step-by-step, comparison, etc.) based on the question.
+- Use notes to guide emphasis; pull specifics from context.
+Important: Do NOT include explicit citations, reference markers, or raw URLs unless the user explicitly asked for citations.
+"""
 
 
-# ─── Debug System ────────────────────────────────────────────────────────────
+# ─── Enhanced Debug System ──────────────────────────────────────────────────
+from dataclasses import dataclass, field
+from contextlib import contextmanager
+
+@dataclass
+class DebugMetrics:
+    """Collects and tracks metrics throughout the debug session."""
+    
+    # Timing metrics
+    start_time: float = field(default_factory=time.perf_counter)
+    operation_times: Dict[str, float] = field(default_factory=dict)
+    total_operations: int = 0
+    
+    # API/LLM metrics
+    llm_calls: int = 0
+    llm_total_time: float = 0.0
+    llm_failures: int = 0
+    
+    # Search metrics
+    search_queries: int = 0
+    urls_found: int = 0
+    urls_crawled: int = 0
+    urls_successful: int = 0
+    urls_failed: int = 0
+    
+    # Content metrics
+    total_content_chars: int = 0
+    context_truncations: int = 0
+    
+    # Error tracking
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+    
+    def add_operation_time(self, operation: str, duration: float) -> None:
+        """Add timing data for an operation."""
+        self.operation_times[operation] = self.operation_times.get(operation, 0) + duration
+        self.total_operations += 1
+    
+    def add_error(self, error: str) -> None:
+        """Add an error to tracking."""
+        self.errors.append(f"[{datetime.now().strftime('%H:%M:%S')}] {error}")
+    
+    def add_warning(self, warning: str) -> None:
+        """Add a warning to tracking."""
+        self.warnings.append(f"[{datetime.now().strftime('%H:%M:%S')}] {warning}")
+    
+    def get_total_time(self) -> float:
+        """Get total elapsed time since start."""
+        return time.perf_counter() - self.start_time
+
+
 class Debug:
-    """Structured debug logging system for SearchRouterTool."""
+    """Enhanced structured debug logging system for SearchRouterTool with metrics collection."""
 
     # ANSI color codes
     _COLORS = {
@@ -179,28 +240,60 @@ class Debug:
         "MAGENTA": "\x1b[95m",
         "BLUE": "\x1b[94m",
         "WHITE": "\x1b[97m",
+        "ORANGE": "\x1b[38;5;208m",
+        "PURPLE": "\x1b[38;5;129m",
     }
 
-    def __init__(self, enabled: bool = False):
+    def __init__(self, enabled: bool = False, tool_name: str = "SearchRouterTool"):
         self.enabled = enabled
+        self.tool_name = tool_name
+        self.metrics = DebugMetrics()
+        self._session_id = str(int(time.time()))[-6:]  # Last 6 digits of timestamp
 
-    def _format_msg(self, category: str, message: str, color: str = "CYAN") -> str:
-        """Format a debug message with consistent styling."""
+    def _get_timestamp(self) -> str:
+        """Get formatted timestamp."""
+        return datetime.now().strftime("%H:%M:%S.%f")[:-3]  # Include milliseconds
+
+    def _format_msg(self, category: str, message: str, color: str = "CYAN", include_timestamp: bool = True) -> str:
+        """Format a debug message with consistent styling and optional timestamp."""
         if not self.enabled:
             return ""
 
-        prefix = f"{self._COLORS['MAGENTA']}{self._COLORS['BOLD']}[SearchRouterTool]{self._COLORS['RESET']}"
-        cat_colored = f"{self._COLORS[color]}{self._COLORS['BOLD']}{category}{self._COLORS['RESET']}"
+        timestamp = f"{self._COLORS['DIM']}[{self._get_timestamp()}]{self._COLORS['RESET']} " if include_timestamp else ""
+        prefix = f"{self._COLORS['MAGENTA']}{self._COLORS['BOLD']}[{self.tool_name}:{self._session_id}]{self._COLORS['RESET']}"
+        cat_colored = f"{self._COLORS[color]}{self._COLORS['BOLD']}{category:<12}{self._COLORS['RESET']}"
         msg_colored = f"{self._COLORS[color]}{message}{self._COLORS['RESET']}"
 
-        return f"{prefix} {cat_colored}: {msg_colored}"
+        return f"{timestamp}{prefix} {cat_colored}: {msg_colored}"
 
-    def _log(self, category: str, message: str, color: str = "CYAN") -> None:
-        """Internal logging method."""
+    def _log(self, category: str, message: str, color: str = "CYAN", track_metric: bool = True) -> None:
+        """Internal logging method with optional metrics tracking."""
         if self.enabled:
             formatted = self._format_msg(category, message, color)
             if formatted:
                 print(formatted, file=sys.stderr)
+            
+            if track_metric:
+                self.metrics.total_operations += 1
+
+    @contextmanager
+    def timer(self, operation_name: str):
+        """Context manager for timing operations."""
+        start = time.perf_counter()
+        try:
+            yield
+        finally:
+            duration = time.perf_counter() - start
+            self.metrics.add_operation_time(operation_name, duration)
+            if self.enabled:
+                self._log("TIMING", f"{operation_name} completed in {duration:.3f}s", "ORANGE", track_metric=False)
+
+    def start_session(self, description: str = "") -> None:
+        """Start a new debug session."""
+        self.metrics = DebugMetrics()  # Reset metrics
+        session_msg = f"Debug session started" + (f": {description}" if description else "")
+        self._log("SESSION", session_msg, "PURPLE", track_metric=False)
+        self._log("SESSION", f"Session ID: {self._session_id}", "DIM", track_metric=False)
 
     def router(self, message: str) -> None:
         """Log search strategy routing decisions."""
@@ -209,6 +302,7 @@ class Debug:
     def search(self, message: str) -> None:
         """Log search operations."""
         self._log("SEARCH", message, "GREEN")
+        self.metrics.search_queries += 1
 
     def crawl(self, message: str) -> None:
         """Log crawling operations."""
@@ -225,6 +319,12 @@ class Debug:
     def error(self, message: str) -> None:
         """Log errors and warnings."""
         self._log("ERROR", message, "RED")
+        self.metrics.add_error(message)
+
+    def warning(self, message: str) -> None:
+        """Log warnings."""
+        self._log("WARNING", message, "YELLOW")
+        self.metrics.add_warning(message)
 
     def flow(self, message: str) -> None:
         """Log general workflow steps."""
@@ -237,6 +337,7 @@ class Debug:
 
         if isinstance(data, str) and len(data) > truncate:
             data_str = f"{data[:truncate]}..."
+            self.metrics.context_truncations += 1
         else:
             data_str = str(data)
 
@@ -250,12 +351,35 @@ class Debug:
         """Log research iterations in COMPLETE mode."""
         self._log("ITERATION", message, "CYAN")
 
+    def llm_call(self, model: str, success: bool = True, duration: float = 0.0) -> None:
+        """Track LLM call metrics."""
+        self.metrics.llm_calls += 1
+        self.metrics.llm_total_time += duration
+        if not success:
+            self.metrics.llm_failures += 1
+        
+        status = "✓" if success else "✗"
+        self._log("LLM", f"{status} {model} ({duration:.3f}s)", "GREEN" if success else "RED")
+
+    def url_metrics(self, found: int = 0, crawled: int = 0, successful: int = 0, failed: int = 0) -> None:
+        """Update URL-related metrics."""
+        self.metrics.urls_found += found
+        self.metrics.urls_crawled += crawled
+        self.metrics.urls_successful += successful
+        self.metrics.urls_failed += failed
+
+    def content_metrics(self, chars: int, truncated: bool = False) -> None:
+        """Update content-related metrics."""
+        self.metrics.total_content_chars += chars
+        if truncated:
+            self.metrics.context_truncations += 1
+
     def report(self, message: str) -> None:
         """Log full debug reports without truncation."""
         if self.enabled:
-            # Split long reports into chunks to avoid Portainer truncation
+            # Split long reports into chunks to avoid terminal truncation
             lines = message.split("\n")
-            chunk_size = 20  # Lines per chunk
+            chunk_size = 25  # Lines per chunk
 
             for i in range(0, len(lines), chunk_size):
                 chunk = lines[i : i + chunk_size]
@@ -264,7 +388,7 @@ class Debug:
                 if i == 0:
                     # First chunk gets the REPORT prefix
                     formatted = self._format_msg(
-                        "REPORT", f"Part {(i//chunk_size)+1}:\n{chunk_text}", "WHITE"
+                        "REPORT", f"Part {(i//chunk_size)+1}:\n{chunk_text}", "WHITE", include_timestamp=False
                     )
                 else:
                     # Subsequent chunks get REPORT-CONT prefix
@@ -272,10 +396,95 @@ class Debug:
                         "REPORT-CONT",
                         f"Part {(i//chunk_size)+1}:\n{chunk_text}",
                         "WHITE",
+                        include_timestamp=False
                     )
 
                 if formatted:
                     print(formatted, file=sys.stderr)
+
+    def metrics_summary(self) -> None:
+        """Display comprehensive metrics summary at the end of execution."""
+        if not self.enabled:
+            return
+        
+        total_time = self.metrics.get_total_time()
+        
+        # Build metrics report
+        report_lines = [
+            "",
+            "═" * 80,
+            f"📊 EXECUTION METRICS SUMMARY - {self.tool_name} (Session: {self._session_id})",
+            "═" * 80,
+            "",
+            "⏱️  TIMING METRICS:",
+            f"   Total Execution Time: {total_time:.3f}s",
+            f"   Total Operations: {self.metrics.total_operations}",
+        ]
+        
+        if self.metrics.operation_times:
+            report_lines.append("   Operation Breakdown:")
+            for op, duration in sorted(self.metrics.operation_times.items(), key=lambda x: x[1], reverse=True):
+                percentage = (duration / total_time) * 100 if total_time > 0 else 0
+                report_lines.append(f"     • {op}: {duration:.3f}s ({percentage:.1f}%)")
+        
+        report_lines.extend([
+            "",
+            "🤖 LLM METRICS:",
+            f"   Total LLM Calls: {self.metrics.llm_calls}",
+            f"   LLM Total Time: {self.metrics.llm_total_time:.3f}s",
+            f"   LLM Failures: {self.metrics.llm_failures}",
+            f"   Average LLM Time: {(self.metrics.llm_total_time / self.metrics.llm_calls):.3f}s" if self.metrics.llm_calls > 0 else "   Average LLM Time: N/A",
+        ])
+        
+        if self.metrics.search_queries > 0:
+            report_lines.extend([
+                "",
+                "🔍 SEARCH METRICS:",
+                f"   Search Queries: {self.metrics.search_queries}",
+                f"   URLs Found: {self.metrics.urls_found}",
+                f"   URLs Crawled: {self.metrics.urls_crawled}",
+                f"   URLs Successful: {self.metrics.urls_successful}",
+                f"   URLs Failed: {self.metrics.urls_failed}",
+                f"   Success Rate: {(self.metrics.urls_successful / self.metrics.urls_crawled * 100):.1f}%" if self.metrics.urls_crawled > 0 else "   Success Rate: N/A",
+            ])
+        
+        if self.metrics.total_content_chars > 0:
+            report_lines.extend([
+                "",
+                "📄 CONTENT METRICS:",
+                f"   Total Content Characters: {self.metrics.total_content_chars:,}",
+                f"   Context Truncations: {self.metrics.context_truncations}",
+            ])
+        
+        if self.metrics.errors or self.metrics.warnings:
+            report_lines.extend([
+                "",
+                "⚠️  ISSUES SUMMARY:",
+                f"   Errors: {len(self.metrics.errors)}",
+                f"   Warnings: {len(self.metrics.warnings)}",
+            ])
+            
+            if self.metrics.errors:
+                report_lines.append("   Recent Errors:")
+                for error in self.metrics.errors[-3:]:  # Show last 3 errors
+                    report_lines.append(f"     • {error}")
+            
+            if self.metrics.warnings:
+                report_lines.append("   Recent Warnings:")
+                for warning in self.metrics.warnings[-3:]:  # Show last 3 warnings
+                    report_lines.append(f"     • {warning}")
+        
+        report_lines.extend([
+            "",
+            "═" * 80,
+            ""
+        ])
+        
+        # Print the metrics report
+        metrics_report = "\n".join(report_lines)
+        formatted = self._format_msg("METRICS", metrics_report, "PURPLE", include_timestamp=False)
+        if formatted:
+            print(formatted, file=sys.stderr)
 
 
 # Legacy compatibility - will be replaced
@@ -310,16 +519,88 @@ async def generate_with_retry(
     """
     A wrapper for generate_chat_completion that includes a retry mechanism with exponential backoff.
     """
-    last_exception = None
-    for attempt in range(max_retries):
+    def _normalize_llm_response(res: Any) -> Dict[str, Any]:
+        # Already a dict
+        if isinstance(res, dict):
+            return res
+        
+        # Debug what we actually got
+        if debug:
+            debug.error(f"LLM response normalization needed. Type: {type(res)}, Dir: {[attr for attr in dir(res) if not attr.startswith('_')]}")
+        
+        # If it's a JSONResponse (Starlette/FastAPI), extract the body and parse
         try:
-            result = await generate_chat_completion(**kwargs)
-            if debug and attempt > 0:
-                debug.flow(f"LLM call succeeded on attempt {attempt + 1}")
+            if hasattr(res, 'body') and hasattr(res, 'status_code'):
+                import json
+                body_bytes = res.body
+                if isinstance(body_bytes, bytes):
+                    parsed = json.loads(body_bytes.decode('utf-8'))
+                    if debug:
+                        debug.flow(f"Successfully parsed JSONResponse body")
+                        debug.data("Full parsed response", str(parsed)[:500] + "..." if len(str(parsed)) > 500 else str(parsed))
+                        debug.data("Response keys", list(parsed.keys()) if isinstance(parsed, dict) else "Not a dict")
+                    return parsed
+                elif isinstance(body_bytes, str):
+                    parsed = json.loads(body_bytes)
+                    if debug:
+                        debug.flow(f"Successfully parsed JSONResponse string body")
+                        debug.data("Full parsed response", str(parsed)[:500] + "..." if len(str(parsed)) > 500 else str(parsed))
+                        debug.data("Response keys", list(parsed.keys()) if isinstance(parsed, dict) else "Not a dict")
+                    return parsed
+        except Exception as e:
+            if debug:
+                debug.error(f"Failed to parse JSONResponse body: {e}")
+        
+        # Try to call render() method if available (for Response objects)
+        try:
+            if hasattr(res, 'render'):
+                import json
+                rendered = res.render(None)  # Pass None as scope if not needed
+                if isinstance(rendered, bytes):
+                    parsed = json.loads(rendered.decode('utf-8'))
+                    if debug:
+                        debug.flow(f"Successfully parsed rendered response")
+                    return parsed
+        except Exception as e:
+            if debug:
+                debug.error(f"Failed to render and parse response: {e}")
+        
+        # Check if it's already JSON-like but not a dict
+        try:
+            if hasattr(res, '__dict__'):
+                return res.__dict__
+        except Exception:
+            pass
+            
+        # Last resort: if it has a dict-like interface
+        try:
+            return dict(res)  # may raise
+        except Exception as e:
+            if debug:
+                debug.error(f"Failed to convert to dict: {e}")
+            raise TypeError(f"LLM response is not a dict and could not be normalized. Type: {type(res)}, Value: {str(res)[:200]}")
+
+    model_name = kwargs.get('form_data', {}).get('model', 'unknown')
+    last_exception = None
+    
+    for attempt in range(max_retries):
+        start_time = time.perf_counter()
+        try:
+            raw = await generate_chat_completion(**kwargs)
+            result = _normalize_llm_response(raw)
+            duration = time.perf_counter() - start_time
+            
+            if debug:
+                debug.llm_call(model_name, success=True, duration=duration)
+                if attempt > 0:
+                    debug.flow(f"LLM call succeeded on attempt {attempt + 1}")
             return result
         except Exception as e:
+            duration = time.perf_counter() - start_time
             last_exception = e
+            
             if debug:
+                debug.llm_call(model_name, success=False, duration=duration)
                 debug.error(
                     f"LLM call failed on attempt {attempt + 1}/{max_retries}: {str(e)[:100]}..."
                 )
@@ -588,6 +869,10 @@ class ToolsInternal:
             default=False,
             description="Enable detailed debug logging for troubleshooting search operations.",
         )
+        show_sources: bool = Field(
+            default=False,
+            description="If true, return show_source=True so the UI can display sources. Prompts instruct the LLM not to include explicit citations in the text unless asked.",
+        )
 
     def __init__(self) -> None:
         self.valves = self.Valves()
@@ -618,7 +903,7 @@ class ToolsInternal:
     async def _safe_exa_search(
         self, query: str, num_results: int, debug_context: str = ""
     ) -> List[Any]:
-        """Safely perform Exa search with error handling and simple caching."""
+        """Safely perform Exa search with error handling, caching, and latency metrics."""
         # Simple cache key based on query and num_results
         cache_key = f"{query}:{num_results}"
 
@@ -627,56 +912,87 @@ class ToolsInternal:
             self.debug.search(f"Cache hit for {debug_context}: using cached results")
             return self._query_cache[cache_key]
 
-        try:
-            exa = self._exa_client()
-            search_data = exa.search(
-                query, num_results=num_results, use_autoprompt=True
-            )
-            results = search_data.results
+        with self.debug.timer(f"exa_search_{debug_context}"):
+            try:
+                exa = self._exa_client()
+                search_data = await asyncio.to_thread(
+                    exa.search, query, num_results=num_results, use_autoprompt=True
+                )
+                results = search_data.results
 
-            # Cache the results (with size limit)
-            if len(self._query_cache) >= self._cache_max_size:
-                # Remove oldest entry (simple FIFO)
-                oldest_key = next(iter(self._query_cache))
-                del self._query_cache[oldest_key]
+                # Cache the results (with size limit)
+                if len(self._query_cache) >= self._cache_max_size:
+                    # Remove oldest entry (simple FIFO)
+                    oldest_key = next(iter(self._query_cache))
+                    del self._query_cache[oldest_key]
 
-            self._query_cache[cache_key] = results
-            self.debug.search(
-                f"Exa search successful for {debug_context}: {len(results)} results (cached)"
-            )
-            return results
-        except Exception as e:
-            self.debug.error(
-                f"Exa search failed for {debug_context}: {str(e)[:100]}..."
-            )
-            return []
+                self._query_cache[cache_key] = results
+                self.debug.search(
+                    f"Exa search successful for {debug_context}: {len(results)} results (cached)"
+                )
+                self.debug.url_metrics(found=len(results))
+                return results
+            except Exception as e:
+                self.debug.error(
+                    f"Exa search failed for {debug_context}: {str(e)[:100]}..."
+                )
+                return []
 
     async def _safe_exa_crawl(
         self, ids_or_urls: List[str], debug_context: str = ""
     ) -> List[Any]:
-        """Safely perform Exa content crawling with error handling."""
+        """Safely perform Exa content crawling with error handling, chunking, concurrency, and latency metrics."""
         if not ids_or_urls:
             return []
 
-        try:
-            exa = self._exa_client()
-            crawled_results = exa.get_contents(ids_or_urls)
-            success_count = len(crawled_results.results)
-            total_count = len(ids_or_urls)
+        with self.debug.timer(f"exa_crawl_{debug_context}"):
+            try:
+                exa = self._exa_client()
+                # Chunk inputs to avoid oversized requests; run chunks concurrently
+                chunk_size = 10
+                chunks: List[List[str]] = [ids_or_urls[i:i+chunk_size] for i in range(0, len(ids_or_urls), chunk_size)]
 
-            if success_count < total_count:
-                self.debug.error(
-                    f"Exa crawl partial failure for {debug_context}: {success_count}/{total_count} succeeded"
-                )
-            else:
-                self.debug.crawl(
-                    f"Exa crawl successful for {debug_context}: {success_count} sources"
-                )
+                async def fetch_chunk(chunk: List[str]):
+                    return await asyncio.to_thread(exa.get_contents, chunk)
 
-            return crawled_results.results
-        except Exception as e:
-            self.debug.error(f"Exa crawl failed for {debug_context}: {str(e)[:100]}...")
-            return []
+                results_list = await asyncio.gather(*[fetch_chunk(c) for c in chunks], return_exceptions=True)
+
+                combined = []
+                total_requested = len(ids_or_urls)
+                total_success = 0
+                total_content_chars = 0
+                
+                for item in results_list:
+                    if isinstance(item, Exception):
+                        self.debug.error(f"Exa crawl chunk failed for {debug_context}: {str(item)[:100]}...")
+                        continue
+                    # item.results is expected from Exa
+                    combined.extend(item.results)
+                    total_success += len(item.results)
+                    # Track content size
+                    for result in item.results:
+                        total_content_chars += len(getattr(result, 'text', ''))
+
+                failed_count = total_requested - total_success
+                
+                if total_success < total_requested:
+                    self.debug.error(
+                        f"Exa crawl partial failure for {debug_context}: {total_success}/{total_requested} succeeded"
+                    )
+                else:
+                    self.debug.crawl(
+                        f"Exa crawl successful for {debug_context}: {total_success} sources"
+                    )
+
+                # Update metrics
+                self.debug.url_metrics(crawled=total_requested, successful=total_success, failed=failed_count)
+                self.debug.content_metrics(total_content_chars)
+                
+                return combined
+            except Exception as e:
+                self.debug.error(f"Exa crawl failed for {debug_context}: {str(e)[:100]}...")
+                self.debug.url_metrics(crawled=len(ids_or_urls), failed=len(ids_or_urls))
+                return []
 
     # Main
     async def routed_search(
@@ -688,17 +1004,21 @@ class ToolsInternal:
         __messages__: Optional[List[Dict]] = None,
         image_context: Optional[str] = None,
     ) -> dict:
+        # Guard: some environments may not have show_sources in valves
+        show_sources = bool(getattr(self.valves, "show_sources", False))
         # Check if Exa is available first
         if not EXA_AVAILABLE:
             error_msg = "❌ Search tool unavailable: exa_py module not installed. Please install with: pip install exa_py"
             self.debug.error(error_msg)
             return {
                 "content": error_msg,
-                "show_source": False,
+                "show_source": show_sources,
             }
 
         # Update debug state based on current valve setting
         self.debug.enabled = self.valves.debug_enabled
+        if self.debug.enabled:
+            self.debug.start_session(f"Query: {query[:50]}...")
         self.debug.flow("Starting SearchRouterTool processing")
 
         async def _status(desc: str, done: bool = False) -> None:
@@ -720,7 +1040,7 @@ class ToolsInternal:
             self.debug.error("Could not find a user message to process")
             return {
                 "content": "Could not find a user message to process. Please try again.",
-                "show_source": False,
+                "show_source": show_sources,
             }
 
         self.debug.data("User query", query)
@@ -748,41 +1068,77 @@ class ToolsInternal:
         self.debug.data("Router query", router_query, truncate=150)
         await _status("Deciding search strategy…")
 
-        router_payload = {
-            "model": self.valves.router_model,
-            "messages": [
-                {"role": "system", "content": SEARCH_STRATEGY_PROMPT},
-                {"role": "user", "content": router_query},  # Use the full context query
-            ],
-            "stream": False,
-        }
-        try:
-            res = await generate_with_retry(
-                request=__request__,
-                form_data=router_payload,
-                user=user_obj,
-                debug=self.debug,
-            )
-            llm_response_text = res["choices"][0]["message"]["content"]
-            self.debug.data("Router full response", llm_response_text, truncate=200)
+        # Check for per-call override from upstream router to skip internal strategy LLM
+        override_decision = ""
+        if __messages__:
+            try:
+                for m in __messages__:
+                    if m.get("role") == "system" and isinstance(m.get("content"), str):
+                        content = m.get("content", "")
+                        if "[EXA_SEARCH_MODE]" in content:
+                            # Expected formats:
+                            # [EXA_SEARCH_MODE] STANDARD
+                            # [EXA_SEARCH_MODE] CRAWL
+                            # [EXA_SEARCH_MODE] COMPLETE
+                            mode = (
+                                content.split("[EXA_SEARCH_MODE]", 1)[1]
+                                .strip()
+                                .split()[0]
+                                .upper()
+                            )
+                            if mode in {"CRAWL", "STANDARD", "COMPLETE"}:
+                                override_decision = mode
+                                self.debug.router(
+                                    f"Override strategy detected via system message → {override_decision}"
+                                )
+                                break
+            except Exception as _:
+                # Swallow parsing errors to avoid breaking normal flow
+                pass
 
-            decision = ""
-            for line in llm_response_text.splitlines():
-                if line.lower().strip().startswith("final answer:"):
-                    decision = line.split(":", 1)[1].strip().upper()
-                    break
+        if override_decision:
+            decision = override_decision
+        else:
+            router_payload = {
+                "model": self.valves.router_model,
+                "messages": [
+                    {"role": "system", "content": SEARCH_STRATEGY_ROUTER_PROMPT_TEMPLATE},
+                    {"role": "user", "content": router_query},  # Use the full context query
+                ],
+                "stream": False,
+            }
+            try:
+                res = await generate_with_retry(
+                    request=__request__,
+                    form_data=router_payload,
+                    user=user_obj,
+                    debug=self.debug,
+                )
+                llm_response_text = res["choices"][0]["message"]["content"]
+                self.debug.data("Router full response", llm_response_text, truncate=200)
 
-            if not decision:
-                self.debug.router(
-                    "Could not parse 'Final Answer:'. Defaulting to STANDARD."
+                # Extract the decision after ANSWER: prefix
+                if "ANSWER:" in llm_response_text:
+                    decision = llm_response_text.split("ANSWER:")[-1].strip().upper()
+                else:
+                    # Fallback: look for final answer format
+                    decision = ""
+                    for line in llm_response_text.splitlines():
+                        if line.lower().strip().startswith("final answer:"):
+                            decision = line.split(":", 1)[1].strip().upper()
+                            break
+                    
+                    if not decision:
+                        self.debug.router(
+                            "Could not parse router decision. Defaulting to STANDARD."
+                        )
+                        decision = "STANDARD"
+
+            except Exception as exc:
+                self.debug.error(
+                    f"Router LLM failed after retries: {exc}. Defaulting to STANDARD."
                 )
                 decision = "STANDARD"
-
-        except Exception as exc:
-            self.debug.error(
-                f"Router LLM failed after retries: {exc}. Defaulting to STANDARD."
-            )
-            decision = "STANDARD"
 
         self.debug.router(f"Router decision → {decision}")
         exa = self._exa_client()
@@ -793,21 +1149,23 @@ class ToolsInternal:
             if not urls:
                 return {
                     "content": "You requested a crawl, but I could not find a URL in your message. Please provide a valid URL.",
-                    "show_source": False,
+                    "show_source": show_sources,
                 }
 
             url_to_crawl = urls[0]
             await _status("Reading content from URL...")
             self.debug.crawl(f"Executing CRAWL on: {url_to_crawl}")
             try:
-                crawled_results = exa.get_contents([url_to_crawl])
+                start_crawl = time.perf_counter()
+                crawled_results = await asyncio.to_thread(exa.get_contents, [url_to_crawl])
+                elapsed_crawl = time.perf_counter() - start_crawl
                 content = (
                     crawled_results.results[0].text
                     if crawled_results.results
                     else "Could not retrieve any text content from the URL."
                 )
                 await _status("Crawl complete.", done=True)
-                self.debug.crawl(f"Successfully crawled {len(content)} characters")
+                self.debug.crawl(f"Successfully crawled {len(content)} characters in {elapsed_crawl:.2f}s")
 
                 # Simple CRAWL mode debug report
                 if self.debug.enabled:
@@ -821,10 +1179,12 @@ class ToolsInternal:
                         "=" * 96 + "\n",
                     ]
                     self.debug.report("\n".join(crawl_report))
+                    self.debug.content_metrics(len(content))
+                    self.debug.metrics_summary()
 
                 return {
                     "content": f"## Content from {url_to_crawl}:\n\n{content}",
-                    "show_source": False,
+                    "show_source": show_sources,
                 }
             except Exception as e:
                 self.debug.error(f"Crawl failed: {e}")
@@ -840,10 +1200,12 @@ class ToolsInternal:
                         "=" * 96 + "\n",
                     ]
                     self.debug.report("\n".join(crawl_report))
+                    self.debug.url_metrics(failed=1)
+                    self.debug.metrics_summary()
 
                 return {
                     "content": f"I failed while trying to crawl the URL: {e}",
-                    "show_source": False,
+                    "show_source": show_sources,
                 }
 
         # Mode 2 - Standard
@@ -879,16 +1241,16 @@ class ToolsInternal:
                 llm_response_text = res["choices"][0]["message"]["content"].strip()
                 self.debug.data("SQR full response", llm_response_text, truncate=200)
 
-                # Extract the last line after the </think> block
-                if "</think>" in llm_response_text:
-                    # Take the content after the last </think> and strip whitespace
-                    refined_query = llm_response_text.split("</think>")[-1].strip()
+                # Extract the query after ANSWER: prefix
+                if "ANSWER:" in llm_response_text:
+                    # Take the content after ANSWER: and strip whitespace
+                    refined_query = llm_response_text.split("ANSWER:")[-1].strip()
                 else:
                     # Fallback for models that might not follow instructions perfectly
                     self.debug.query(
-                        "SQR response did not contain a <think> block. Falling back to last line."
+                        "SQR response did not contain ANSWER: prefix. Using full response."
                     )
-                    refined_query = llm_response_text.splitlines()[-1].strip()
+                    refined_query = llm_response_text.strip()
                 self.debug.query(f"Refined STANDARD query: {refined_query}")
                 report.refined_query = refined_query
 
@@ -1007,348 +1369,382 @@ class ToolsInternal:
                 report.final_output = final_result
                 if self.debug.enabled:
                     self.debug.report(report.format_report())
-                return {"content": final_result, "show_source": False}
+                    self.debug.metrics_summary()
+                return {"content": final_result, "show_source": show_sources}
 
-        # Mode 3 - Complete
+        # Mode 3 - Complete (New Iterative Research System)
         elif decision == "COMPLETE":
-            self.debug.flow("Starting COMPLETE search mode")
-            report = CompleteDebugReport(
-                initial_user_query=last_user_message,
-                valve_urls_per_query=self.valves.complete_urls_to_search_per_query,
-                valve_queries_to_crawl=self.valves.complete_queries_to_crawl,
-                valve_queries_to_generate=self.valves.complete_queries_to_generate,
-                valve_max_iterations=self.valves.complete_max_search_iterations,
+            return await self._iterative_complete_search(
+                last_user_message, convo_snippet, _status, __request__, user_obj, show_sources
             )
-            notepad = {}
-            final_result = ""
-            search_notes = ""
-            try:
-                await _status("Initiating deep research...")
-
-                refiner_user_prompt = f"## Conversation History:\n{convo_snippet}\n\n## User's Latest Query:\n'{last_user_message}'"
-                refiner_payload = {
-                    "model": self.valves.complete_agent_model,
-                    "messages": [
-                        {"role": "system", "content": IMPROVED_SQR_PROMPT_TEMPLATE},
-                        {"role": "user", "content": refiner_user_prompt},
-                    ],
-                    "stream": False,
-                }
-
-                res = await generate_with_retry(
-                    request=__request__,
-                    form_data=refiner_payload,
-                    user=user_obj,
-                    debug=self.debug,
-                )
-                llm_response_text = res["choices"][0]["message"]["content"].strip()
-                self.debug.data(
-                    "COMPLETE SQR response", llm_response_text, truncate=200
-                )
-
-                # Extract the last line after the </think> block
-                if "</think>" in llm_response_text:
-                    # Take the content after the last </think> and strip whitespace
-                    refined_query = llm_response_text.split("</think>")[-1].strip()
-                else:
-                    # Fallback for models that might not follow instructions perfectly
-                    self.debug.query(
-                        "COMPLETE SQR response did not contain a <think> block. Falling back to last line."
-                    )
-                    refined_query = llm_response_text.splitlines()[-1].strip()
-                self.debug.query(f"Refined COMPLETE query: {refined_query}")
-                report.refined_initial_query = refined_query
-
-                await _status(f'Initial search for: "{refined_query}"')
-                broad_search_data = exa.search(
-                    refined_query,
-                    num_results=self.valves.complete_urls_to_search_per_query,
-                    use_autoprompt=True,
-                )
-                ids_to_crawl = [
-                    res.id
-                    for res in broad_search_data.results[
-                        : self.valves.complete_queries_to_crawl
-                    ]
-                ]
-                if not ids_to_crawl:
-                    raise RuntimeError(
-                        "Initial search did not yield any results to analyze."
-                    )
-
-                # Track attempted vs successful crawls
-                attempted_crawl_count = len(ids_to_crawl)
-                crawled_results = exa.get_contents(ids_to_crawl)
-                successful_crawl_count = len(crawled_results.results)
-                failed_crawl_count = attempted_crawl_count - successful_crawl_count
-
-                crawled_urls = [res.url for res in crawled_results.results]
-
-                if failed_crawl_count > 0:
-                    self.debug.error(
-                        f"Initial COMPLETE crawl failures: {failed_crawl_count}/{attempted_crawl_count} URLs failed"
-                    )
-                    self.debug.search(
-                        f"Initial COMPLETE search found {successful_crawl_count} sources (attempted {attempted_crawl_count})"
-                    )
-                else:
-                    self.debug.search(
-                        f"Initial COMPLETE search found {successful_crawl_count} sources"
-                    )
-
-                report.add_iteration(0, "START", "", [])
-                report.add_search_to_iteration(0, refined_query, crawled_urls)
-
-                for res in crawled_results.results:
-                    if res.url not in notepad:
-                        notepad[res.url] = (
-                            f"## Content from '{res.title}' ({res.url}):\n{' '.join(res.text.split())}"
-                        )
-                self.debug.agent(f"Notepad initialized with {len(notepad)} sources.")
-
-                for i in range(self.valves.complete_max_search_iterations):
-                    iteration_num = i + 1
-                    self.debug.iteration(
-                        f"Starting iteration {iteration_num}/{self.valves.complete_max_search_iterations}"
-                    )
-                    await _status(
-                        f"Analyzing findings (Pass {iteration_num}/{self.valves.complete_max_search_iterations})..."
-                    )
-                    current_context = "\n\n---\n\n".join(notepad.values())
-
-                    if i == 0:
-                        self.debug.agent("First iteration, forcing continuation.")
-                        research_decision = "CONTINUE"
-                    else:
-                        self.debug.agent("Deciding whether to continue research...")
-                        decider_user_prompt = f"## User's Question:\n{last_user_message}\n\n## Current Research Context:\n{current_context}\n\nIs every part of the user's question answered in the context? Reply with the single word CONTINUE or FINISH."
-                        decider_payload = {
-                            "model": self.valves.complete_agent_model,
-                            "messages": [
-                                {"role": "system", "content": COMPLETE_DECIDER_PROMPT},
-                                {"role": "user", "content": decider_user_prompt},
-                            ],
-                            "stream": False,
-                        }
-                        res = await generate_with_retry(
-                            request=__request__,
-                            form_data=decider_payload,
-                            user=user_obj,
-                            debug=self.debug,
-                        )
-                        research_decision = (
-                            res["choices"][0]["message"]["content"].strip().upper()
-                        )
-                        self.debug.agent(f"Research decision: {research_decision}")
-
-                    if research_decision == "FINISH":
-                        report.add_iteration(
-                            iteration_num, research_decision, search_notes, []
-                        )
-                        self.debug.agent("Decision made to finalize the answer.")
-                        break
-
-                    await _status("Planning next steps...")
-                    notes_user_prompt = f"## User's Original Request:\n{last_user_message}\n\n## Current Research Context:\n{current_context}\n\nProvide your 'Research Analysis & Plan'."
-                    notes_payload = {
-                        "model": self.valves.complete_agent_model,
-                        "messages": [
-                            {"role": "system", "content": COMPLETE_NOTES_PROMPT},
-                            {"role": "user", "content": notes_user_prompt},
-                        ],
-                        "stream": False,
-                    }
-                    res = await generate_with_retry(
-                        request=__request__,
-                        form_data=notes_payload,
-                        user=user_obj,
-                        debug=self.debug,
-                    )
-                    search_notes = res["choices"][0]["message"]["content"]
-                    self.debug.data("Search Notes", search_notes, truncate=150)
-
-                    q_gen_sys_prompt = COMPLETE_Q_GEN_PROMPT_TEMPLATE.format(
-                        date_str=f"{datetime.now().year} {datetime.now().month} {datetime.now().day}",
-                        query_count=self.valves.complete_queries_to_generate,
-                    )
-                    q_gen_user_prompt = f"## Research Analysis & Plan:\n{search_notes}"
-                    q_gen_payload = {
-                        "model": self.valves.complete_agent_model,
-                        "messages": [
-                            {"role": "system", "content": q_gen_sys_prompt},
-                            {"role": "user", "content": q_gen_user_prompt},
-                        ],
-                        "response_format": {"type": "json_object"},
-                    }
-
-                    res = await generate_with_retry(
-                        request=__request__,
-                        form_data=q_gen_payload,
-                        user=user_obj,
-                        debug=self.debug,
-                    )
-                    raw_q_gen_response = res["choices"][0]["message"]["content"]
-                    clean_response = (
-                        raw_q_gen_response.strip()
-                        .removeprefix("```json")
-                        .removesuffix("```")
-                        .strip()
-                    )
-
-                    parsed_json = json.loads(clean_response)
-                    if isinstance(parsed_json, dict) and "queries" in parsed_json:
-                        targeted_queries = parsed_json.get("queries", [])
-                    elif isinstance(parsed_json, list):
-                        targeted_queries = parsed_json
-                    else:
-                        targeted_queries = []
-
-                    if targeted_queries:
-                        targeted_queries = [
-                            str(q) for q in targeted_queries if isinstance(q, str)
-                        ]
-
-                    self.debug.agent(
-                        f"Generated new targeted queries: {targeted_queries}"
-                    )
-                    report.add_iteration(
-                        iteration_num, research_decision, search_notes, targeted_queries
-                    )
-
-                    if not targeted_queries:
-                        continue
-
-                    for t_query in targeted_queries:
-                        await _status(f'Following new lead: "{t_query[:50]}..."')
-                        self.debug.search(f'Executing targeted query: "{t_query}"')
-
-                        # Use safe methods for better error handling
-                        search_results = await self._safe_exa_search(
-                            t_query,
-                            self.valves.complete_urls_to_search_per_query,
-                            f"targeted query: {t_query[:30]}...",
-                        )
-
-                        if not search_results:
-                            self.debug.search(
-                                f"No search results found for query: {t_query[:50]}..."
-                            )
-                            continue
-
-                        ids_to_crawl = [
-                            res.id
-                            for res in search_results[
-                                : self.valves.complete_queries_to_crawl
-                            ]
-                        ]
-
-                        if not ids_to_crawl:
-                            self.debug.search(
-                                f"No crawl candidates found for query: {t_query[:50]}..."
-                            )
-                            continue
-
-                        # Use safe crawl method
-                        crawled_results = await self._safe_exa_crawl(
-                            ids_to_crawl, f"targeted query: {t_query[:30]}..."
-                        )
-
-                        crawled_urls = [res.url for res in crawled_results]
-                        self.debug.crawl(
-                            f"Crawled {len(crawled_results)} URLs for query: {t_query[:50]}..."
-                        )
-
-                        report.add_search_to_iteration(
-                            iteration_num, t_query, crawled_urls
-                        )
-
-                        for res in crawled_results:
-                            if res.url not in notepad:
-                                notepad[res.url] = (
-                                    f"## Content from '{res.title}' ({res.url}):\n{' '.join(res.text.split())}"
-                                )
-                        self.debug.agent(
-                            f"Notepad now contains {len(notepad)} sources."
-                        )
-
-                await _status(
-                    f"Compiling final report from {len(notepad)} gathered sources..."
-                )
-                final_context = "\n\n---\n\n".join(notepad.values())
-                if not final_context:
-                    raise RuntimeError(
-                        "Unable to gather any information during research."
-                    )
-
-                synthesis_decider_user_prompt = f"User's original request: '{last_user_message}'\n\nRespond with a single word: SYNTHESIZE or RETURN_RAW."
-                synthesis_decider_payload = {
-                    "model": self.valves.complete_agent_model,
-                    "messages": [
-                        {"role": "system", "content": SYNTHESIS_DECIDER_PROMPT},
-                        {"role": "user", "content": synthesis_decider_user_prompt},
-                    ],
-                    "stream": False,
-                }
-                res = await generate_with_retry(
-                    request=__request__,
-                    form_data=synthesis_decider_payload,
-                    user=user_obj,
-                    debug=self.debug,
-                )
-                final_action = res["choices"][0]["message"]["content"].strip().upper()
-                self.debug.synthesis(f"Final action decision: {final_action}")
-                report.final_decision = final_action
-
-                if final_action == "SYNTHESIZE":
-                    await _status("Synthesizing final answer...")
-                    self.debug.synthesis(
-                        "Synthesizing comprehensive answer from research"
-                    )
-                    summarizer_user_prompt = f"## User's Original Question:\n{last_user_message}\n\n## Agent's Research Notes:\n{search_notes}\n\n## Full Research Context (Your Notepad):\n{final_context}"
-                    summarizer_payload = {
-                        "model": self.valves.complete_summarizer_model,
-                        "messages": [
-                            {"role": "system", "content": COMPLETE_SUMMARIZER_PROMPT},
-                            {"role": "user", "content": summarizer_user_prompt},
-                        ],
-                    }
-                    final_summary_response = await generate_with_retry(
-                        request=__request__,
-                        form_data=summarizer_payload,
-                        user=user_obj,
-                        debug=self.debug,
-                    )
-                    final_result = final_summary_response["choices"][0]["message"][
-                        "content"
-                    ]
-                    report.final_payload = f"SYSTEM: {COMPLETE_SUMMARIZER_PROMPT}\nUSER: {summarizer_user_prompt}"
-                else:  # RETURN_RAW
-                    self.debug.synthesis("Returning raw context as requested.")
-                    final_result = f"I have gathered the following raw information based on your request:\n\n---\n\n{final_context}"
-                    report.final_payload = final_context
-
-                await _status("Research complete.", done=True)
-                self.debug.flow("COMPLETE search mode finished successfully")
-
-            except Exception as e:
-                self.debug.error(f"COMPLETE search path failed with an exception: {e}")
-                if notepad:
-                    final_context = "\n\n---\n\n".join(notepad.values())
-                    final_result = f"The research process encountered an error. Here are the notes I gathered before the issue occurred:\n\n{final_context}"
-                else:
-                    final_result = f"I failed during the COMPLETE research process: {e}"
-            finally:
-                report.final_output = final_result
-                report.total_sources_found = len(notepad)
-                if self.debug.enabled:
-                    self.debug.report(report.format_report())
-                return {"content": final_result, "show_source": False}
 
         self.debug.flow("SearchRouterTool processing completed")
+        if self.debug.enabled:
+            self.debug.metrics_summary()
         return {
             "content": f"Router chose '{decision}', but no corresponding action was taken.",
-            "show_source": False,
+            "show_source": show_sources,
         }
+
+    async def _iterative_complete_search(
+        self, user_query: str, convo_snippet: str, status_func, request, user_obj, show_sources: bool
+    ) -> dict:
+        """New iterative complete search system based on user's vision"""
+        self.debug.flow("Starting NEW iterative complete search mode")
+        
+        try:
+            # Get current datetime for all prompts
+            from datetime import datetime
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            current_year = datetime.now().year
+            
+            # Phase 1: Generate introductory query for context
+            await status_func("Gathering initial context...")
+            self.debug.agent("Phase 1: Generating introductory query")
+            
+            intro_payload = {
+                "model": self.valves.complete_agent_model,
+                "messages": [
+                    {"role": "system", "content": INTRODUCTORY_QUERY_PROMPT.format(current_date=current_date, current_year=current_year)},
+                    {"role": "user", "content": f"User's request: {user_query}"},
+                ],
+                "stream": False,
+            }
+            
+            intro_res = await generate_with_retry(request=request, form_data=intro_payload, user=user_obj, debug=self.debug)
+            
+            # Debug the response structure
+            self.debug.data("Intro LLM raw response type", type(intro_res))
+            self.debug.data("Intro LLM response keys", list(intro_res.keys()) if isinstance(intro_res, dict) else "Not a dict")
+            self.debug.data("Intro LLM full response", str(intro_res)[:800] + "..." if len(str(intro_res)) > 800 else str(intro_res))
+            
+            # Handle different response formats
+            if "choices" in intro_res and intro_res["choices"]:
+                intro_response = intro_res["choices"][0]["message"]["content"]
+            elif "content" in intro_res:
+                intro_response = intro_res["content"]
+            elif "message" in intro_res:
+                intro_response = intro_res["message"]
+            elif isinstance(intro_res, str):
+                intro_response = intro_res
+            else:
+                raise ValueError(f"Unexpected LLM response format. Keys: {list(intro_res.keys()) if isinstance(intro_res, dict) else 'Not a dict'}")
+            
+            # Extract intro query
+            intro_query = ""
+            for line in intro_response.split("\n"):
+                if line.startswith("QUERY:"):
+                    intro_query = line.split("QUERY:", 1)[1].strip()
+                    break
+            
+            if not intro_query:
+                intro_query = intro_response.strip()
+            
+            self.debug.data("Introductory query extracted", intro_query)
+            
+            # Search with the introductory query - with retry logic for failures
+            intro_content = ""
+            intro_search_attempts = 0
+            max_intro_attempts = 3
+            
+            while intro_search_attempts < max_intro_attempts and not intro_content:
+                intro_search_attempts += 1
+                self.debug.search(f"Executing introductory search (attempt {intro_search_attempts}) — query: {intro_query}")
+                
+                try:
+                    # Perform search + crawl using internal helpers (replaces missing _search_and_crawl)
+                    search_results = await self._safe_exa_search(
+                        intro_query, self.valves.complete_urls_to_search_per_query, "introductory"
+                    )
+                    intro_results = {"content": "", "sources": []}
+                    if search_results:
+                        ids_to_crawl = [res.id for res in search_results[: self.valves.complete_queries_to_crawl]]
+                        crawled_results = await self._safe_exa_crawl(ids_to_crawl, "introductory")
+                        if crawled_results:
+                            texts = []
+                            for res in crawled_results:
+                                if getattr(res, "text", None):
+                                    texts.append(' '.join(res.text.split()[:3000]))
+                                if getattr(res, "url", None):
+                                    intro_results["sources"].append(res.url)
+                            intro_results["content"] = "\n\n".join(texts)
+                    intro_content = intro_results.get("content", "")
+                    
+                    if intro_content and intro_content.strip():
+                        if intro_results.get("sources"):
+                            self.debug.data("Intro search sources found", len(intro_results["sources"]))
+                        break
+                    else:
+                        self.debug.error(f"Introductory search attempt {intro_search_attempts} returned empty content")
+                        if intro_search_attempts < max_intro_attempts:
+                            # Modify query slightly for retry
+                            intro_query = f"{intro_query} overview basics"
+                            await status_func(f"Retrying initial context search (attempt {intro_search_attempts + 1})...")
+                        
+                except Exception as e:
+                    self.debug.error(f"Introductory search attempt {intro_search_attempts} failed: {str(e)}")
+                    if intro_search_attempts < max_intro_attempts:
+                        await status_func(f"Retrying initial context search (attempt {intro_search_attempts + 1})...")
+            
+            if not intro_content:
+                intro_content = "Unable to gather initial context after multiple attempts. Proceeding with user query directly."
+                self.debug.warning("All introductory search attempts failed, using fallback")
+            
+            # Phase 2: Set objectives and research direction
+            await status_func("Setting research objectives...")
+            self.debug.agent("Phase 2: Setting research objectives")
+            
+            objectives_payload = {
+                "model": self.valves.complete_agent_model,
+                "messages": [
+                    {"role": "system", "content": OBJECTIVE_SETTING_PROMPT.format(current_date=current_date)},
+                    {"role": "user", "content": f"User's request: {user_query}\n\nConversation context: {convo_snippet}\n\nIntroductory information:\n{intro_content}"},
+                ],
+                "stream": False,
+            }
+            
+            objectives_res = await generate_with_retry(request=request, form_data=objectives_payload, user=user_obj, debug=self.debug)
+            
+            # Handle different response formats
+            if "choices" in objectives_res and objectives_res["choices"]:
+                objectives_response = objectives_res["choices"][0]["message"]["content"]
+            elif "content" in objectives_res:
+                objectives_response = objectives_res["content"]
+            elif "message" in objectives_res:
+                objectives_response = objectives_res["message"]
+            elif isinstance(objectives_res, str):
+                objectives_response = objectives_res
+            else:
+                raise ValueError(f"Unexpected objectives LLM response format. Keys: {list(objectives_res.keys()) if isinstance(objectives_res, dict) else 'Not a dict'}")
+            self.debug.data("Research objectives", objectives_response, truncate=300)
+            
+            # Phase 3: Iterative search with reasoning
+            research_chain = [f"INITIAL CONTEXT: {intro_content[:10000]}...", f"OBJECTIVES: {objectives_response}"]
+            previous_findings = "Initial context gathered from introductory search."
+            
+            for iteration in range(1, self.valves.complete_max_search_iterations + 1):
+                self.debug.iteration(f"Starting research iteration {iteration}/{self.valves.complete_max_search_iterations}")
+                await status_func(f"Research iteration {iteration}/{self.valves.complete_max_search_iterations}...")
+                
+                # Generate reasoning and queries for this iteration
+                reasoning_prompt = ITERATION_REASONING_PROMPT.format(
+                    current_date=current_date,
+                    current_year=current_year,
+                    objectives=objectives_response[:6000],
+                    previous_findings=previous_findings[:16000],
+                    current_iteration=iteration,
+                    max_iterations=self.valves.complete_max_search_iterations,
+                    query_count=self.valves.complete_queries_to_generate
+                )
+                
+                reasoning_payload = {
+                    "model": self.valves.complete_agent_model,
+                    "messages": [
+                        {"role": "system", "content": "You are a research iteration planner."},
+                        {"role": "user", "content": reasoning_prompt},
+                    ],
+                    "stream": False,
+                }
+                
+                reasoning_res = await generate_with_retry(request=request, form_data=reasoning_payload, user=user_obj, debug=self.debug)
+                
+                # Handle different response formats
+                if "choices" in reasoning_res and reasoning_res["choices"]:
+                    reasoning_response = reasoning_res["choices"][0]["message"]["content"]
+                elif "content" in reasoning_res:
+                    reasoning_response = reasoning_res["content"]
+                elif "message" in reasoning_res:
+                    reasoning_response = reasoning_res["message"]
+                elif isinstance(reasoning_res, str):
+                    reasoning_response = reasoning_res
+                else:
+                    raise ValueError(f"Unexpected reasoning LLM response format. Keys: {list(reasoning_res.keys()) if isinstance(reasoning_res, dict) else 'Not a dict'}")
+                self.debug.agent(f"Iteration {iteration} reasoning: {reasoning_response[:200]}...")
+                
+                # Extract queries from reasoning response with more robust parsing
+                queries = []
+                
+                # Method 1: Look for QUERIES: line and extract from it
+                for line in reasoning_response.split("\n"):
+                    if "QUERIES:" in line.upper():
+                        # Try to extract from same line if it contains array-like structure
+                        if "[" in line and "]" in line:
+                            try:
+                                import json
+                                query_part = line.split("QUERIES:")[-1].strip()
+                                queries = json.loads(query_part)
+                                break
+                            except json.JSONDecodeError:
+                                continue
+                        
+                        # Look at following lines for array structure
+                        lines = reasoning_response.split("\n")
+                        start_idx = lines.index(line)
+                        for i in range(start_idx + 1, min(start_idx + 10, len(lines))):
+                            current_line = lines[i].strip()
+                            if current_line.startswith("[") and "]" in current_line:
+                                try:
+                                    import json
+                                    queries = json.loads(current_line)
+                                    break
+                                except json.JSONDecodeError:
+                                    continue
+                        break
+                
+                # Method 2: Extract individual quoted strings
+                if not queries:
+                    import re
+                    quoted_queries = re.findall(r'"([^"]*)"', reasoning_response)
+                    if quoted_queries:
+                        queries = [q for q in quoted_queries if len(q) > 5]  # Filter short quotes
+                
+                # Method 3: Look for list-style queries
+                if not queries:
+                    lines = reasoning_response.split("\n")
+                    for line in lines:
+                        if (line.strip().startswith("-") or line.strip().startswith("*") or 
+                            line.strip().startswith("1.") or line.strip().startswith("2.")):
+                            query = line.strip().lstrip("-*123456789. ").strip()
+                            if len(query) > 10:
+                                queries.append(query)
+                
+                # Final fallback
+                if not queries:
+                    queries = [f"{user_query} detailed research iteration {iteration}"]
+                    self.debug.error(f"Could not extract queries from reasoning, using fallback")
+                
+                queries = queries[:self.valves.complete_queries_to_generate]  # Limit to valve setting
+                self.debug.search(f"Iteration {iteration} queries: {queries}")
+                
+                # Execute searches for this iteration
+                iteration_findings = []
+                for query in queries:
+                    await status_func(f"Searching: {query[:40]}...")
+                    
+                    search_results = await self._safe_exa_search(
+                        query, self.valves.complete_urls_to_search_per_query, f"iteration {iteration} query"
+                    )
+                    
+                    if search_results:
+                        ids_to_crawl = [res.id for res in search_results[:self.valves.complete_queries_to_crawl]]
+                        crawled_results = await self._safe_exa_crawl(ids_to_crawl, f"iteration {iteration} crawl")
+                        
+                        if crawled_results:
+                            for res in crawled_results:
+                                if res.text and res.text.strip():
+                                    title = res.title or "Unknown Source"
+                                    text_summary = ' '.join(res.text.split()[:3000])
+                                    if text_summary:
+                                        finding_summary = f"From {title}: {text_summary}"
+                                        iteration_findings.append(finding_summary)
+                
+                # Conclude iteration
+                await status_func(f"Analyzing iteration {iteration} findings...")
+                
+                iteration_content = "\n\n".join(iteration_findings) if iteration_findings else "No significant findings in this iteration."
+                
+                conclusion_prompt = f"""
+                Research findings from iteration {iteration}:
+                {iteration_content}
+                
+                User's original question: {user_query}
+                Research objectives: {objectives_response}
+                Previous findings summary: {previous_findings}
+                
+                Analyze these findings and determine next steps.
+                """
+                
+                conclusion_payload = {
+                    "model": self.valves.complete_agent_model,
+                    "messages": [
+                        {"role": "system", "content": ITERATION_CONCLUSION_PROMPT.format(current_date=current_date)},
+                        {"role": "user", "content": conclusion_prompt},
+                    ],
+                    "stream": False,
+                }
+                
+                conclusion_res = await generate_with_retry(request=request, form_data=conclusion_payload, user=user_obj, debug=self.debug)
+                
+                # Handle different response formats
+                if "choices" in conclusion_res and conclusion_res["choices"]:
+                    conclusion_response = conclusion_res["choices"][0]["message"]["content"]
+                elif "content" in conclusion_res:
+                    conclusion_response = conclusion_res["content"]
+                elif "message" in conclusion_res:
+                    conclusion_response = conclusion_res["message"]
+                elif isinstance(conclusion_res, str):
+                    conclusion_response = conclusion_res
+                else:
+                    raise ValueError(f"Unexpected conclusion LLM response format. Keys: {list(conclusion_res.keys()) if isinstance(conclusion_res, dict) else 'Not a dict'}")
+                
+                # Extract decision
+                decision = "CONTINUE"
+                if "DECISION:" in conclusion_response.upper():
+                    decision_line = [line for line in conclusion_response.split("\n") if "DECISION:" in line.upper()]
+                    if decision_line:
+                        decision = decision_line[0].split(":")[-1].strip().upper()
+                
+                # Update research chain (pass down summaries, not raw content)
+                findings_summary = "No summary available"
+                for line in conclusion_response.split("\n"):
+                    if "FINDINGS_SUMMARY:" in line.upper():
+                        findings_summary = line.split(":", 1)[1].strip()
+                        break
+                
+                research_chain.append(f"ITERATION {iteration}: {findings_summary}")
+                previous_findings = findings_summary
+                
+                self.debug.agent(f"Iteration {iteration} decision: {decision}")
+                
+                if decision == "FINISH" or iteration == self.valves.complete_max_search_iterations:
+                    self.debug.agent("Research concluded - synthesizing final answer")
+                    break
+            
+            # Phase 4: Final synthesis
+            await status_func("Synthesizing comprehensive answer...")
+            self.debug.synthesis("Generating final synthesis from research chain")
+            
+            research_summary = "\n\n".join(research_chain)
+            
+            final_payload = {
+                "model": self.valves.complete_summarizer_model,
+                "messages": [
+                    {"role": "system", "content": FINAL_SYNTHESIS_PROMPT.format(current_date=current_date)},
+                    {"role": "user", "content": f"User's original question: {user_query}\n\nResearch progression and findings:\n{research_summary}"},
+                ],
+                "stream": False,
+            }
+            
+            final_res = await generate_with_retry(request=request, form_data=final_payload, user=user_obj, debug=self.debug)
+            
+            # Handle different response formats
+            if "choices" in final_res and final_res["choices"]:
+                final_answer = final_res["choices"][0]["message"]["content"]
+            elif "content" in final_res:
+                final_answer = final_res["content"]
+            elif "message" in final_res:
+                final_answer = final_res["message"]
+            elif isinstance(final_res, str):
+                final_answer = final_res
+            else:
+                raise ValueError(f"Unexpected final synthesis LLM response format. Keys: {list(final_res.keys()) if isinstance(final_res, dict) else 'Not a dict'}")
+            
+            await status_func("Research complete.", done=True)
+            self.debug.synthesis("Iterative complete search finished successfully")
+            
+            if self.debug.enabled:
+                self.debug.metrics_summary()
+            
+            return {"content": final_answer, "show_source": show_sources}
+            
+        except Exception as e:
+            self.debug.error(f"Iterative complete search failed: {e}")
+            if self.debug.enabled:
+                self.debug.metrics_summary()
+            return {
+                "content": f"I encountered an error during the research process: {e}",
+                "show_source": show_sources,
+            }
 
 
 # Final tool definition for OpenWebUI

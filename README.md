@@ -18,14 +18,6 @@
 
 The OpenWebUI Auto Tool Selector Suite transforms your local AI models from passive chat interfaces into intelligent, autonomous assistants. Version 1.1 introduces enhanced debugging, flexible architecture, and improved accessibility for both vision and non-vision models.
 
-### What's New in v1.1
-
-- **Enhanced Debugging System**: Comprehensive debug logging with color-coded output for troubleshooting
-- **Smart Vision Integration**: Non-vision models can now "see" images through automatic transcription
-- **Modular Search Architecture**: Works with or without Exa search, falling back to native OpenWebUI search
-- **Flexible Code Execution**: Choose between Jupyter notebook environment or basic code interpreter
-- **Settings-Based Configuration**: No more manual file downloads - configure everything through the UI
-
 ---
 
 ## Key Features

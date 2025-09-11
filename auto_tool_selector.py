@@ -3,7 +3,7 @@ Title: Auto Tool Selector
 Description: A hybrid middleware that dynamically routes to all tools, applying special handling where needed.
 author: ShaoRou459
 author_url: https://github.com/ShaoRou459
-Version: 1.2.0
+Version: 1.2.5
 """
 
 from __future__ import annotations
@@ -572,6 +572,24 @@ async def flux_image_generation_handler(
     return body
 
 
+async def default_web_search_handler(
+    request: Request, body: dict, ctx: dict, user: Any, debug: Debug = None
+) -> dict:
+    """
+    Thin wrapper around OpenWebUI's chat_web_search_handler that normalizes the
+    call signature from (request, body, ctx, user[, debug]) to the expected
+    (request, body, __event_emitter__, user).
+
+    This prevents signature mismatches when other handlers accept an optional
+    debug parameter while the default web search handler does not.
+    """
+    if debug:
+        debug.handler("Routing to OpenWebUI default web_search handler")
+
+    # Delegate to the OpenWebUI middleware handler with the correct parameters
+    extra_params = ctx if isinstance(ctx, dict) else {}
+    return await chat_web_search_handler(request, body, extra_params, user)
+
 async def code_interpreter_handler(
     request: Request,
     body: dict,
@@ -608,6 +626,17 @@ async def code_interpreter_handler(
     if debug:
         interpreter_type = "Jupyter notebook" if use_jupyter else "basic code execution"
         debug.handler(f"🔧 Code Interpreter enabled for this turn ({interpreter_type})")
+    # Clear status immediately; the main model will proceed to respond
+    if emitter:
+        try:
+            await emitter(
+                {
+                    "type": "status",
+                    "data": {"description": "", "done": True},
+                }
+            )
+        except Exception:
+            pass
     return body
 
 
@@ -634,6 +663,17 @@ async def memory_handler(
     body.setdefault("features", {})["code_interpreter"] = True
     if debug:
         debug.handler("🔧 Code Interpreter enabled for this turn --Via memory")
+    # Clear status immediately; the main model will proceed to respond
+    if emitter:
+        try:
+            await emitter(
+                {
+                    "type": "status",
+                    "data": {"description": "", "done": True},
+                }
+            )
+        except Exception:
+            pass
     return body
 
 
@@ -677,7 +717,8 @@ class Filter:
             "image_generation": flux_image_generation_handler,
             "code_interpreter": code_interpreter_handler,
             "memory": memory_handler,
-            "web_search": chat_web_search_handler,
+            # Use a local wrapper to normalize signature and prevent arg mismatches
+            "web_search": default_web_search_handler,
         }
 
     async def inlet(
@@ -779,6 +820,15 @@ class Filter:
 
             elapsed_vision = time.perf_counter() - start_vision
             self.debug.flow(f"Vision analysis completed in {elapsed_vision:.2f}s for {len(image_urls)} image(s)")
+
+            # Clear the vision analysis status now that it's complete
+            try:
+                await __event_emitter__({
+                    "type": "status",
+                    "data": {"description": "", "done": True},
+                })
+            except Exception:
+                pass
 
             if image_descriptions:
                 full_image_context = "\n\n".join(image_descriptions)
@@ -989,7 +1039,13 @@ class Filter:
                 self.debug.handler("Passing image context to web search")
 
             # The handler receives the temporary tool_body, leaving the original `body` untouched.
-            return await handler(__request__, tool_body, ctx, user_obj, self.debug)
+            # Special case: default web_search handler only takes 4 parameters
+            if decision == "web_search":
+                self.debug.handler("Calling default web_search handler with 4 parameters")
+                return await handler(__request__, tool_body, ctx, user_obj)
+            else:
+                self.debug.handler(f"Calling {decision} handler with 5 parameters (including debug)")
+                return await handler(__request__, tool_body, ctx, user_obj, self.debug)
 
         elif decision and decision != "none" and decision in tool_ids:
             self.debug.tool(f"Activating standard tool with ID → {decision}")
@@ -997,9 +1053,11 @@ class Filter:
             # Special case for web_search: use handler if valve is set to default, otherwise use tool ID
             if decision == "web_search" and not self.valves.use_exa_router_search:
                 # Use the special handler for default web search
+                self.debug.handler("Using default web_search handler via tool_ids path")
                 handler = self.special_handlers["web_search"]
                 ctx = {"__event_emitter__": __event_emitter__}
-                return await handler(__request__, tool_body, ctx, user_obj, self.debug)
+                # Default chat_web_search_handler only takes 4 parameters (no debug)
+                return await handler(__request__, tool_body, ctx, user_obj)
             else:
                 # Use the tool ID approach for exa_router_search or other tools
                 # Inject per-call mode for exa_router_search so the tool can skip its own router
@@ -1018,4 +1076,12 @@ class Filter:
         self.debug.flow("AutoToolSelector processing completed")
         if self.debug.enabled:
             self.debug.metrics_summary()
+        # Safety: ensure any transient status is cleared before handing back to model
+        try:
+            await __event_emitter__({
+                "type": "status",
+                "data": {"description": "", "done": True},
+            })
+        except Exception:
+            pass
         return body

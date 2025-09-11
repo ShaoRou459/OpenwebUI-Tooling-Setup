@@ -3,7 +3,7 @@ Title: Search Router Tool
 Description: An advanced research tool with a robust retry and graceful failure mechanism.
 author: ShaoRou459
 author_url: https://github.com/ShaoRou459
-Version: 1.2.0
+Version: 1.2.5
 Requirements: exa_py, open_webui
 """
 
@@ -135,12 +135,15 @@ ITERATION_CONCLUSION_PROMPT = """
 You are a research analyst. Summarize what you found in this iteration and determine next steps.
 
 CURRENT DATE: {current_date}
+ITERATION: {current_iteration} of {max_iterations}
 
 Provide:
 FINDINGS_SUMMARY: [Key information discovered this iteration - be concise but comprehensive]
 PROGRESS_ASSESSMENT: [How much closer are you to answering the user's question?]
 NEXT_STEPS: [What should the next iteration focus on, or should research conclude?]
 DECISION: [CONTINUE or FINISH]
+
+Note: If this is iteration {max_iterations}, you must decide FINISH unless critical information is still missing.
 """
 
 FINAL_SYNTHESIS_PROMPT = """
@@ -157,7 +160,7 @@ Using the research chain and findings summaries, organize the information into a
 
 Structure this as organized, factual information that provides the chat model with everything needed to give a complete response to the user's original question. Focus on being comprehensive and well-organized rather than directly answering.
 
-Do NOT include raw URLs or direct quotes from sources.
+Do include raw URLs or direct quotes from sources when needed.
 """
 
 SYNTHESIS_DECIDER_PROMPT = """
@@ -618,6 +621,59 @@ async def generate_with_retry(
     raise last_exception
 
 
+async def generate_with_parsing_retry(
+    max_retries: int = 3, delay: int = 3, debug: Debug = None, 
+    expected_keys: List[str] = None, **kwargs: Any
+) -> Dict[str, Any]:
+    """
+    A wrapper that combines generate_with_retry with parsing retry logic.
+    Retries both API failures and response parsing failures.
+    """
+    last_exception = None
+    
+    for attempt in range(max_retries):
+        try:
+            # First, try the API call with retry
+            result = await generate_with_retry(max_retries=max_retries, delay=delay, debug=debug, **kwargs)
+            
+            # Then validate the response format
+            if expected_keys:
+                if isinstance(result, dict):
+                    # Check if any expected key exists
+                    if any(key in result for key in expected_keys):
+                        return result
+                    else:
+                        # Log the parsing issue and retry
+                        if debug:
+                            debug.warning(f"Response missing expected keys {expected_keys}. Got keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}. Attempt {attempt + 1}/{max_retries}")
+                        raise ValueError(f"Response missing expected keys {expected_keys}. Keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
+                else:
+                    if debug:
+                        debug.warning(f"Response is not a dict. Type: {type(result)}. Attempt {attempt + 1}/{max_retries}")
+                    raise ValueError(f"Response is not a dict. Type: {type(result)}")
+            else:
+                # No specific validation needed, return result
+                return result
+                
+        except Exception as e:
+            last_exception = e
+            
+            if debug:
+                debug.error(f"Generate with parsing retry failed on attempt {attempt + 1}/{max_retries}: {str(e)[:100]}...")
+            
+            # Don't wait on the last attempt
+            if attempt < max_retries - 1:
+                # Use same exponential backoff as generate_with_retry
+                wait_time = delay * (2**attempt) + (attempt * 0.5)
+                if debug:
+                    debug.flow(f"Waiting {wait_time:.1f}s before retry attempt {attempt + 2}")
+                await asyncio.sleep(wait_time)
+    
+    if debug:
+        debug.error(f"Generate with parsing retry failed after {max_retries} retries. Last error: {str(last_exception)[:100]}...")
+    raise last_exception
+
+
 # Debug Report Dataclasses
 
 
@@ -880,6 +936,8 @@ class ToolsInternal:
         self._exa: Optional[Exa] = None
         self._query_cache: Dict[str, Any] = {}  # Simple query caching
         self._cache_max_size = 100  # Limit cache size
+        self._active_sessions: Dict[str, asyncio.Lock] = {}  # Session concurrency control
+        self._session_lock = asyncio.Lock()  # Lock for managing session locks
 
     def _exa_client(self) -> Exa:
         if self._exa is None:
@@ -994,7 +1052,98 @@ class ToolsInternal:
                 self.debug.url_metrics(crawled=len(ids_or_urls), failed=len(ids_or_urls))
                 return []
 
+    async def _extract_with_correction(
+        self,
+        *,
+        request: Any,
+        user_obj: Any,
+        model: str,
+        original_text: str,
+        prefix: str,
+        validate: Callable[[str], bool],
+        correction_instructions: str,
+        max_attempts: int = 2,
+    ) -> str:
+        """
+        Extracts the substring following a required prefix from LLM output. If missing or invalid,
+        performs up to `max_attempts` corrective re-prompts to coerce the model to output the correct format.
+
+        Returns the best-effort extracted value. Callers should still defensively validate the return value.
+        """
+        def _extract(text: str) -> str:
+            for line in text.splitlines():
+                if line.strip().startswith(prefix):
+                    return line.split(prefix, 1)[1].strip()
+            return ""
+
+        # First, try to extract from the original text
+        extracted = _extract(original_text)
+        if not extracted:
+            # As a fallback, if there's only one non-empty line, use it
+            lines = [ln.strip() for ln in original_text.splitlines() if ln.strip()]
+            if len(lines) == 1:
+                extracted = lines[0]
+
+        if extracted and validate(extracted):
+            return extracted
+
+        # Attempt corrective re-prompts
+        attempt = 0
+        while attempt < max_attempts:
+            attempt += 1
+            self.debug.warning(
+                f"Output missing/invalid '{prefix}' prefix. Attempting corrective re-prompt ({attempt}/{max_attempts})."
+            )
+            payload = {
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": correction_instructions,
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Original response to fix:\n{original_text}",
+                    },
+                ],
+                "stream": False,
+            }
+
+            try:
+                fixed = await generate_with_retry(
+                    request=request, form_data=payload, user=user_obj, debug=self.debug
+                )
+                fixed_text = fixed.get("choices", [{}])[0].get("message", {}).get("content", "")
+                self.debug.data("Correction full response", fixed_text, truncate=200)
+
+                extracted = _extract(fixed_text) or fixed_text.strip()
+                if extracted and validate(extracted):
+                    return extracted
+            except Exception as e:
+                self.debug.error(f"Corrective re-prompt failed: {e}")
+
+        # Last resort: return a trimmed original if it passes, else empty string
+        fallback = original_text.strip()
+        return fallback if validate(fallback) else ""
+
     # Main
+    async def _get_session_lock(self, user_id: str, query_hash: str) -> asyncio.Lock:
+        """Get or create a session lock for concurrent call protection."""
+        session_key = f"{user_id}_{query_hash}"
+        
+        async with self._session_lock:
+            if session_key not in self._active_sessions:
+                self._active_sessions[session_key] = asyncio.Lock()
+            return self._active_sessions[session_key]
+    
+    async def _cleanup_session_lock(self, user_id: str, query_hash: str) -> None:
+        """Clean up session lock after completion."""
+        session_key = f"{user_id}_{query_hash}"
+        
+        async with self._session_lock:
+            if session_key in self._active_sessions:
+                del self._active_sessions[session_key]
+
     async def routed_search(
         self,
         query: str,
@@ -1015,11 +1164,56 @@ class ToolsInternal:
                 "show_source": show_sources,
             }
 
-        # Update debug state based on current valve setting
-        self.debug.enabled = self.valves.debug_enabled
-        if self.debug.enabled:
-            self.debug.start_session(f"Query: {query[:50]}...")
-        self.debug.flow("Starting SearchRouterTool processing")
+        # Generate session identifiers for concurrency control
+        user_id = __user__.get("id", "unknown") if __user__ else "unknown"
+        query_hash = str(hash(query))[-8:]  # Use last 8 chars of query hash
+        
+        # Get session lock to prevent concurrent calls
+        session_lock = await self._get_session_lock(user_id, query_hash)
+        
+        # Check if another instance is already running for this user/query combo
+        if session_lock.locked():
+            self.debug.flow(f"Concurrent call detected for user {user_id}, query hash {query_hash}")
+            return {
+                "content": "⚠️ A search is already in progress for this query. Please wait for it to complete before starting a new search.",
+                "show_source": show_sources,
+            }
+        
+        # Acquire the lock for this session
+        async with session_lock:
+            # Update debug state based on current valve setting
+            self.debug.enabled = self.valves.debug_enabled
+            if self.debug.enabled:
+                self.debug.start_session(f"Query: {query[:50]}...")
+            self.debug.flow("Starting SearchRouterTool processing")
+            
+            try:
+                return await self._execute_search(
+                    query, __event_emitter__, __request__, __user__, __messages__, image_context, show_sources
+                )
+            finally:
+                # Clean up the session lock
+                await self._cleanup_session_lock(user_id, query_hash)
+                # Safety: ensure any transient status is cleared at the end
+                if __event_emitter__:
+                    try:
+                        await __event_emitter__({
+                            "type": "status",
+                            "data": {"description": "", "done": True},
+                        })
+                    except Exception:
+                        pass
+    
+    async def _execute_search(
+        self,
+        query: str,
+        __event_emitter__: Optional[Callable[[dict], Awaitable[None]]] = None,
+        __request__: Optional[Any] = None,
+        __user__: Optional[Dict] = None,
+        __messages__: Optional[List[Dict]] = None,
+        image_context: Optional[str] = None,
+        show_sources: bool = False,
+    ) -> dict:
 
         async def _status(desc: str, done: bool = False) -> None:
             if __event_emitter__:
@@ -1117,22 +1311,25 @@ class ToolsInternal:
                 llm_response_text = res["choices"][0]["message"]["content"]
                 self.debug.data("Router full response", llm_response_text, truncate=200)
 
-                # Extract the decision after ANSWER: prefix
-                if "ANSWER:" in llm_response_text:
-                    decision = llm_response_text.split("ANSWER:")[-1].strip().upper()
-                else:
-                    # Fallback: look for final answer format
-                    decision = ""
-                    for line in llm_response_text.splitlines():
-                        if line.lower().strip().startswith("final answer:"):
-                            decision = line.split(":", 1)[1].strip().upper()
-                            break
-                    
-                    if not decision:
-                        self.debug.router(
-                            "Could not parse router decision. Defaulting to STANDARD."
-                        )
-                        decision = "STANDARD"
+                # Extract the decision using a robust prefixed-line correction helper
+                decision = await self._extract_with_correction(
+                    request=__request__,
+                    user_obj=user_obj,
+                    model=self.valves.router_model,
+                    original_text=llm_response_text,
+                    prefix="ANSWER:",
+                    validate=lambda s: s in {"CRAWL", "STANDARD", "COMPLETE"},
+                    correction_instructions=(
+                        "Return exactly one line with the routing decision in the format 'ANSWER: CRAWL' or 'ANSWER: STANDARD' or 'ANSWER: COMPLETE'. "
+                        "Do not include any other text."
+                    ),
+                )
+
+                if decision not in {"CRAWL", "STANDARD", "COMPLETE"}:
+                    self.debug.router(
+                        "Could not parse router decision even after correction. Defaulting to STANDARD."
+                    )
+                    decision = "STANDARD"
 
             except Exception as exc:
                 self.debug.error(
@@ -1182,8 +1379,9 @@ class ToolsInternal:
                     self.debug.content_metrics(len(content))
                     self.debug.metrics_summary()
 
+                self.debug.synthesis("Crawl complete, returning content.")
                 return {
-                    "content": f"## Content from {url_to_crawl}:\n\n{content}",
+                    "content": content,
                     "show_source": show_sources,
                 }
             except Exception as e:
@@ -1241,16 +1439,19 @@ class ToolsInternal:
                 llm_response_text = res["choices"][0]["message"]["content"].strip()
                 self.debug.data("SQR full response", llm_response_text, truncate=200)
 
-                # Extract the query after ANSWER: prefix
-                if "ANSWER:" in llm_response_text:
-                    # Take the content after ANSWER: and strip whitespace
-                    refined_query = llm_response_text.split("ANSWER:")[-1].strip()
-                else:
-                    # Fallback for models that might not follow instructions perfectly
-                    self.debug.query(
-                        "SQR response did not contain ANSWER: prefix. Using full response."
-                    )
-                    refined_query = llm_response_text.strip()
+                # Extract refined query using correction helper
+                refined_query = await self._extract_with_correction(
+                    request=__request__,
+                    user_obj=user_obj,
+                    model=self.valves.quick_search_model,
+                    original_text=llm_response_text,
+                    prefix="ANSWER:",
+                    validate=lambda s: len(s) > 0 and len(s) <= 1000,
+                    correction_instructions=(
+                        "Return exactly one line starting with 'ANSWER: ' followed by the optimized search query. "
+                        "No explanations or quotes."
+                    ),
+                )
                 self.debug.query(f"Refined STANDARD query: {refined_query}")
                 report.refined_query = refined_query
 
@@ -1411,11 +1612,17 @@ class ToolsInternal:
                 "stream": False,
             }
             
-            intro_res = await generate_with_retry(request=request, form_data=intro_payload, user=user_obj, debug=self.debug)
+            intro_res = await generate_with_parsing_retry(
+                request=request, 
+                form_data=intro_payload, 
+                user=user_obj, 
+                debug=self.debug,
+                expected_keys=["choices", "content", "message"]
+            )
             
             # Debug the response structure
             self.debug.data("Intro LLM raw response type", type(intro_res))
-            self.debug.data("Intro LLM response keys", list(intro_res.keys()) if isinstance(intro_res, dict) else "Not a dict")
+            self.debug.data("Intro LLM raw response keys", list(intro_res.keys()) if isinstance(intro_res, dict) else "Not a dict")
             self.debug.data("Intro LLM full response", str(intro_res)[:800] + "..." if len(str(intro_res)) > 800 else str(intro_res))
             
             # Handle different response formats
@@ -1428,17 +1635,21 @@ class ToolsInternal:
             elif isinstance(intro_res, str):
                 intro_response = intro_res
             else:
-                raise ValueError(f"Unexpected LLM response format. Keys: {list(intro_res.keys()) if isinstance(intro_res, dict) else 'Not a dict'}")
+                raise ValueError(f"Unexpected intro LLM response format. Keys: {list(intro_res.keys()) if isinstance(intro_res, dict) else 'Not a dict'}")
             
-            # Extract intro query
-            intro_query = ""
-            for line in intro_response.split("\n"):
-                if line.startswith("QUERY:"):
-                    intro_query = line.split("QUERY:", 1)[1].strip()
-                    break
-            
-            if not intro_query:
-                intro_query = intro_response.strip()
+            # Extract intro query using correction helper
+            intro_query = await self._extract_with_correction(
+                request=request,
+                user_obj=user_obj,
+                model=self.valves.complete_agent_model,
+                original_text=intro_response,
+                prefix="QUERY:",
+                validate=lambda s: len(s) > 0,
+                correction_instructions=(
+                    "Return exactly one line starting with 'QUERY: ' followed by a concise introductory search query. "
+                    "No additional text."
+                ),
+            )
             
             self.debug.data("Introductory query extracted", intro_query)
             
@@ -1503,7 +1714,13 @@ class ToolsInternal:
                 "stream": False,
             }
             
-            objectives_res = await generate_with_retry(request=request, form_data=objectives_payload, user=user_obj, debug=self.debug)
+            objectives_res = await generate_with_parsing_retry(
+                request=request, 
+                form_data=objectives_payload, 
+                user=user_obj, 
+                debug=self.debug,
+                expected_keys=["choices", "content", "message"]
+            )
             
             # Handle different response formats
             if "choices" in objectives_res and objectives_res["choices"]:
@@ -1546,7 +1763,13 @@ class ToolsInternal:
                     "stream": False,
                 }
                 
-                reasoning_res = await generate_with_retry(request=request, form_data=reasoning_payload, user=user_obj, debug=self.debug)
+                reasoning_res = await generate_with_parsing_retry(
+                    request=request, 
+                    form_data=reasoning_payload, 
+                    user=user_obj, 
+                    debug=self.debug,
+                    expected_keys=["choices", "content", "message"]
+                )
                 
                 # Handle different response formats
                 if "choices" in reasoning_res and reasoning_res["choices"]:
@@ -1657,13 +1880,23 @@ class ToolsInternal:
                 conclusion_payload = {
                     "model": self.valves.complete_agent_model,
                     "messages": [
-                        {"role": "system", "content": ITERATION_CONCLUSION_PROMPT.format(current_date=current_date)},
+                        {"role": "system", "content": ITERATION_CONCLUSION_PROMPT.format(
+                            current_date=current_date,
+                            current_iteration=iteration,
+                            max_iterations=self.valves.complete_max_search_iterations
+                        )},
                         {"role": "user", "content": conclusion_prompt},
                     ],
                     "stream": False,
                 }
                 
-                conclusion_res = await generate_with_retry(request=request, form_data=conclusion_payload, user=user_obj, debug=self.debug)
+                conclusion_res = await generate_with_parsing_retry(
+                    request=request, 
+                    form_data=conclusion_payload, 
+                    user=user_obj, 
+                    debug=self.debug,
+                    expected_keys=["choices", "content", "message"]
+                )
                 
                 # Handle different response formats
                 if "choices" in conclusion_res and conclusion_res["choices"]:
@@ -1715,7 +1948,13 @@ class ToolsInternal:
                 "stream": False,
             }
             
-            final_res = await generate_with_retry(request=request, form_data=final_payload, user=user_obj, debug=self.debug)
+            final_res = await generate_with_parsing_retry(
+                request=request, 
+                form_data=final_payload, 
+                user=user_obj, 
+                debug=self.debug,
+                expected_keys=["choices", "content", "message"]
+            )
             
             # Handle different response formats
             if "choices" in final_res and final_res["choices"]:
@@ -1741,9 +1980,13 @@ class ToolsInternal:
             self.debug.error(f"Iterative complete search failed: {e}")
             if self.debug.enabled:
                 self.debug.metrics_summary()
+            # Safety: clear any lingering status on failure
+            try:
+                await status_func("", done=True)
+            except Exception:
+                pass
             return {
-                "content": f"I encountered an error during the research process: {e}",
-                "show_source": show_sources,
+                "content": f"I encountered an error during the research process: {e}"
             }
 
 

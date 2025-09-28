@@ -1,22 +1,22 @@
 # OpenWebUI Auto Tool Selector Suite
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/releases)
+[![Version](https://img.shields.io/badge/version-1.2.5-blue.svg)](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/releases)
 [![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://python.org)
 [![OpenWebUI](https://img.shields.io/badge/OpenWebUI-compatible-orange.svg)](https://openwebui.com)
 [![License](https://img.shields.io/badge/license-GPL-red.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/ShaoRou459/OpenwebUI-Tooling-Setup?style=social)](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/stargazers)
 
-**Intelligent tool routing and autonomous AI capabilities for OpenWebUI**
+**Next-generation intelligent tool routing and autonomous AI capabilities for OpenWebUI**
 
 📦 **OpenWebUI Marketplace**: [Auto Tool Router](https://openwebui.com/f/sdjfhsud/auto_tool_router) | [Exa Search Router](https://openwebui.com/t/sdjfhsud/exa_router_search)
 
-[中文 Readme](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/blob/main/README_zh.md) | [Quick Start](#installation--setup) | [Configuration Guide](#configuration)
+[中文 Readme](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/blob/main/README_zh.md) | [Quick Start](#installation--setup) | [Configuration Guide](#configuration) | [What's New](#whats-new-in-v125)
 
 ---
 
 ## Overview
 
-The OpenWebUI Auto Tool Selector Suite transforms your local AI models from passive chat interfaces into intelligent, autonomous assistants. Version 1.1 introduces enhanced debugging, flexible architecture, and improved accessibility for both vision and non-vision models.
+The OpenWebUI Auto Tool Selector Suite transforms your local AI models from passive chat interfaces into intelligent, autonomous assistants capable of research, creativity, and problem-solving. Version 1.2.5 introduces enterprise-grade debugging, advanced iterative research capabilities, and state-of-the-art AI model support for 2025.
 
 ---
 
@@ -158,16 +158,99 @@ docker logs open-webui -f
 
 ---
 
+## What's New in v1.2.5
+
+### 🆕 Major Features
+- **Advanced Iterative Research System**: Multi-iteration research with objective setting and reasoning
+- **Enterprise-Grade Debug System**: Comprehensive metrics collection and session tracking
+- **Enhanced Error Handling**: Robust retry mechanisms with exponential backoff
+- **Concurrent Session Protection**: Prevents multiple instances running simultaneously
+- **Memory Handler**: Persistent conversation memory via code interpreter
+- **Universal Vision Processing**: Advanced image analysis and context injection
+
+### 🔧 Technical Improvements
+- **LLM Response Normalization**: Handles various response formats automatically
+- **Query Caching**: Improved performance with intelligent caching system
+- **Batch Processing**: Concurrent crawling and chunked content processing
+- **Context Management**: Smart truncation and content optimization
+- **Status Broadcasting**: Real-time progress updates throughout operations
+
+### 📊 Debug & Monitoring
+- **Session Metrics**: Detailed timing, operation counts, and performance tracking
+- **Content Analytics**: Character counts, truncation tracking, success rates
+- **Error Classification**: Structured error logging with timestamps
+- **Visual Debug Reports**: Color-coded, timestamped logging system
+
+## Model Recommendations (2025)
+
+### 🏆 Top AI Models for Different Use Cases
+
+#### **Text Generation & Reasoning**
+1. **Gemini 2.5 Pro** (Google) - Score: 1456 ⭐
+2. **Claude Opus 4.1 Thinking** (Anthropic) - Score: 1449 
+3. **GPT-5 High** (OpenAI) - Score: 1440
+4. **Qwen3 Max Preview** (Qwen) - Score: 1430
+5. **DeepSeek R1** (DeepSeek) - Top cost-effective option
+
+#### **Web Development & Coding**
+1. **GPT-5 High** (OpenAI) - Score: 1483 🥇
+2. **Claude Opus 4.1 Thinking** (Anthropic) - Score: 1476
+3. **Gemini 2.5 Pro** (Google) - Score: 1405
+4. **DeepSeek R1** (DeepSeek) - Score: 1393
+
+#### **Vision & Multimodal**
+1. **Gemini 2.5 Pro** (Google) - Score: 1248 👁️
+2. **GPT-4o Latest** (OpenAI) - Score: 1235
+3. **GPT-5 Chat** (OpenAI) - Score: 1224
+4. **GPT-4.5 Preview** (OpenAI) - Score: 1220
+
+#### **Budget-Friendly Powerhouses**
+- **Gemini 2.5 Flash** - Ultra-fast, cost-effective for most tasks
+- **Claude 3.5 Sonnet** - Excellent balance of capability and cost
+- **Qwen3 Max** - High performance open-source alternative
+- **DeepSeek V2.5** - Best value for coding tasks
+
+### 💡 Recommended Settings for v1.2.5
+
+#### **High-Performance Setup**
+```yaml
+helper_model: "gemini-2.5-flash"           # Fast routing decisions
+vision_model: "gemini-2.5-pro"             # Superior vision capabilities  
+router_model: "gemini-2.5-flash"           # Quick strategy routing
+quick_search_model: "claude-3.5-sonnet"    # Balanced performance
+complete_agent_model: "gpt-5-high"         # Deep research analysis
+complete_summarizer_model: "gemini-2.5-pro" # Comprehensive summaries
+```
+
+#### **Cost-Optimized Setup**
+```yaml
+helper_model: "claude-3.5-haiku"           # Ultra-cheap routing
+vision_model: "gpt-4o-mini"                # Affordable vision
+router_model: "claude-3.5-haiku"           # Budget strategy
+quick_search_model: "deepseek-v2.5"        # Excellent value
+complete_agent_model: "qwen3-max"          # Open-source power
+complete_summarizer_model: "claude-3.5-sonnet" # Quality summaries
+```
+
 ## Update Log
 
-### Version 1.1 (Current)
-- **New**: Enhanced debugging system with color-coded logging
-- **New**: Vision model integration for non-vision models
-- **New**: Modular search architecture with native OpenWebUI fallback
-- **New**: Choice between Jupyter and basic code interpreters
-- **New**: Settings-based configuration (no more manual file management)
-- **Improved**: More robust error handling and retry mechanisms
-- **Improved**: Better status updates and user feedback
+### Version 1.2.5 (Latest) 🚀
+- **New**: Iterative research system with multi-phase analysis
+- **New**: Enterprise debugging with comprehensive metrics
+- **New**: Memory handler for persistent conversation context
+- **New**: Concurrent session protection and query caching
+- **New**: Universal vision processing for all model types
+- **New**: Enhanced error handling with retry mechanisms
+- **Improved**: Response normalization for different LLM formats
+- **Improved**: Real-time status updates and progress tracking
+- **Improved**: Content optimization and context management
+
+### Version 1.2.0
+- Enhanced debugging system with color-coded logging
+- Vision model integration for non-vision models
+- Modular search architecture with native OpenWebUI fallback
+- Choice between Jupyter and basic code interpreters
+- Settings-based configuration
 
 ### Version 1.0
 - Initial release with autonomous tool routing
@@ -197,7 +280,7 @@ A: Enable debug mode and check Docker logs. You'll see detailed information abou
 - **Author**: ShaoRou459
 - **GitHub**: [OpenwebUI-Tooling-Setup](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup)
 - **Issues**: Report bugs and request features via GitHub Issues
-- **Version**: 1.1.0
+- **Version**: 1.2.5
 
 ---
 

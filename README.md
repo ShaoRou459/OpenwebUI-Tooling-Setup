@@ -94,8 +94,8 @@ All configuration is now done through the UI settings - no manual file editing r
 
 | Setting | Purpose | Recommendation |
 |---------|---------|----------------|
-| `helper_model` | Decides which tool to use for queries | GPT-4o-mini, Claude-3-haiku |
-| `vision_model` | Analyzes images for non-vision models | GPT-4o, Gemini-2.0-flash |
+| `helper_model` | Decides which tool to use for queries | OpenAI o4-mini, Gemini 2.5 Flash |
+| `vision_model` | Analyzes images for non-vision models | OpenAI o3 / o4-mini, Gemini 2.5 Pro |
 | `vision_injection_models` | List of non-vision models to enhance | Add your model IDs (comma-separated) |
 | `use_exa_router_search` | Enable advanced Exa search vs native search | `true` (if Exa tool is installed) |
 | `debug_enabled` | Enable detailed debug logging | `false` (enable for troubleshooting) |
@@ -106,13 +106,43 @@ All configuration is now done through the UI settings - no manual file editing r
 | Setting | Purpose | Recommendation |
 |---------|---------|----------------|
 | `exa_api_key` | **Required**: Your Exa.ai API key | Get yours at [exa.ai](https://exa.ai) |
-| `router_model` | Chooses search strategy (Crawl/Standard/Complete) | GPT-4o-mini |
-| `quick_search_model` | Handles standard search operations | GPT-4o-mini |
-| `complete_agent_model` | Powers deep research analysis | GPT-4o, Claude-3-sonnet |
-| `complete_summarizer_model` | Creates final comprehensive summaries | GPT-4o, Gemini-2.0-flash |
+| `router_model` | Chooses search strategy (Crawl/Standard/Complete) | OpenAI o4-mini or Gemini 2.5 Flash |
+| `quick_search_model` | Handles standard search operations | OpenAI o4-mini or Gemini 2.5 Flash |
+| `complete_agent_model` | Powers deep research analysis | OpenAI o3/o3-pro, Gemini 2.5 Pro, Claude 3.7 Sonnet |
+| `complete_summarizer_model` | Creates final comprehensive summaries | Gemini 2.5 Pro, OpenAI o4-mini |
 | `debug_enabled` | Enable search operation debugging | `false` (enable for troubleshooting) |
 
 ---
+
+## Recommended Models (as of 2025‑09)
+
+Pick per role; choose any provider you already use. Links reference official model pages.
+
+- Helper/router (fast, low cost):
+  - OpenAI o4-mini — small, cost‑efficient reasoning with strong vision
+  - Google Gemini 2.5 Flash — controllable “thinking” budget, great latency
+- Vision model (image/visual reasoning for non‑vision chats):
+  - OpenAI o3 or o4-mini — tool‑using multimodal reasoning
+  - Google Gemini 2.5 Pro — long‑context, native multimodality
+  - Meta Llama 4 Maverick/Scout (open‑weight) — strong multimodal open models
+- COMPLETE agent (deep research/planning/coding/math):
+  - OpenAI o3 (or o3‑pro) — frontier reasoning and tool use
+  - Google Gemini 2.5 Pro — long‑context “thinking” model
+  - Anthropic Claude 3.7 Sonnet — hybrid reasoning with extended thinking
+  - DeepSeek R1‑0528 (open‑weight) — strong math/coding reasoning
+- COMPLETE summarizer (final synthesis):
+  - Gemini 2.5 Pro (very long context)
+  - OpenAI o4‑mini (fast, economical)
+  - Llama 4 Scout (open‑weight)
+
+Open‑/self‑host friendly picks: Meta Llama 4 Maverick/Scout and DeepSeek R1‑0528 (MIT‑licensed weights) are excellent when you need local or budget‑conscious deployments.
+
+Sources:
+- OpenAI o3 / o4‑mini (Apr 16, 2025) and o3‑pro (Jun 10, 2025): https://openai.com/index/introducing-o3-and-o4-mini/ and system card https://openai.com/index/o3-o4-mini-system-card
+- Google Gemini 2.5 Pro (GA Jun 17, 2025): https://cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/2-5-pro and report (Jun 16, 2025): https://storage.googleapis.com/deepmind-media/gemini/gemini_v2_5_report.pdf
+- Anthropic Claude 3.7 Sonnet (Feb 24, 2025): https://www.anthropic.com/news/claude-3-7-sonnet
+- Meta Llama 4 (Apr 5, 2025): https://ai.meta.com/blog/llama-4-multimodal-intelligence/
+- DeepSeek R1‑0528 (May 28, 2025): https://api-docs.deepseek.com/news/news250528
 
 ## Usage Examples
 

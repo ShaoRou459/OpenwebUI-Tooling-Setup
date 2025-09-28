@@ -227,8 +227,6 @@ A: Enable debug mode and check Docker logs. You'll see detailed information abou
 - **Author**: ShaoRou459
 - **GitHub**: [OpenwebUI-Tooling-Setup](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup)
 - **Issues**: Report bugs and request features via GitHub Issues
-- **Version**: 1.1.0
-
 ---
 
 *Transform your AI from reactive to proactive with intelligent tool routing and autonomous capabilities.*

@@ -1,14 +1,12 @@
 # OpenWebUI Auto Tool Selector Suite
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/releases)
+[![Version](https://img.shields.io/badge/version-1.2.5-blue.svg)](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/releases)
 [![Python](https://img.shields.io/badge/python-3.8+-green.svg)](https://python.org)
 [![OpenWebUI](https://img.shields.io/badge/OpenWebUI-compatible-orange.svg)](https://openwebui.com)
 [![License](https://img.shields.io/badge/license-GPL-red.svg)](LICENSE)
 [![Stars](https://img.shields.io/github/stars/ShaoRou459/OpenwebUI-Tooling-Setup?style=social)](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/stargazers)
 
-**Intelligent tool routing and autonomous AI capabilities for OpenWebUI**
-
-📦 **OpenWebUI Marketplace**: [Auto Tool Router](https://openwebui.com/f/sdjfhsud/auto_tool_router) | [Exa Search Router](https://openwebui.com/t/sdjfhsud/exa_router_search)
+Intelligent tool routing and autonomous AI capabilities for OpenWebUI.
 
 [中文 Readme](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup/blob/main/README_zh.md) | [Quick Start](#installation--setup) | [Configuration Guide](#configuration)
 
@@ -16,7 +14,7 @@
 
 ## Overview
 
-The OpenWebUI Auto Tool Selector Suite transforms your local AI models from passive chat interfaces into intelligent, autonomous assistants. Version 1.1 introduces enhanced debugging, flexible architecture, and improved accessibility for both vision and non-vision models.
+The OpenWebUI Auto Tool Selector Suite turns models into proactive assistants with autonomous tool use, high-quality search, and code execution. Version 1.2.5 adds structured debug metrics, iterative research, safer concurrency, and better vision support.
 
 ---
 
@@ -24,22 +22,24 @@ The OpenWebUI Auto Tool Selector Suite transforms your local AI models from pass
 
 | Feature | Description |
 |---------|-------------|
-| **🤖 Autonomous Tool Selection** | Automatically routes user queries to the most appropriate tool without manual intervention |
-| **🔍 Multi-Modal Search** | Three search modes: **Crawl** (specific URLs), **Standard** (quick research), **Complete** (deep analysis) |
-| **🎨 Intelligent Image Generation** | Auto-optimizes prompts and seamlessly integrates generated images into conversations |
-| **💻 Dual Code Execution** | Support for both Jupyter notebooks and basic Python code interpretation |
-| **👁️ Universal Vision** | Non-vision models gain image understanding through automatic transcription |
-| **🔧 Advanced Debugging** | Comprehensive logging system for troubleshooting and optimization |
-| **⚡ Real-Time Status** | Live progress updates throughout tool execution |
+| 🤖 Autonomous Tool Selection | Routes each query to the best tool (search, code, image, memory) using a helper model |
+| 🔍 Research Engine | Three modes: CRAWL (read a URL), STANDARD (quick multi-source), COMPLETE (iterative deep research) |
+| 🎨 Image Generation | Optimizes prompts and embeds the generated image back into the chat |
+| 💻 Code Execution | Toggle between Jupyter notebook or lightweight Python execution per turn |
+| 👁️ Universal Vision | Adds image understanding to non-vision models via automatic descriptions/injection |
+| 🛡️ Concurrency Safety | Per-user per-query locking to avoid duplicate searches; cache for repeated queries |
+| 🧭 Exa Integration & Fallback | Uses Exa when available; clean fallback to OpenWebUI default web_search |
+| 🧪 Structured Debug Metrics | Colorized logs, timing, LLM call metrics, URL stats, and end-of-run summaries |
+| ⚡ Real-Time Status | Live progress updates through the OpenWebUI status channel |
 
 ---
 
 ## Architecture
 
-The suite consists of two main components:
+Two composable parts:
 
-1. **Auto Tool Selector** (Function): Master router that analyzes queries and selects appropriate tools
-2. **Exa Search Router** (Tool): Advanced search capabilities with fallback to native OpenWebUI search
+1) Auto Tool Selector (Function) — entrypoint router that analyzes conversation context and selects a single tool or none.
+2) Exa Search Router (Tool) — advanced research with CRAWL/STANDARD/COMPLETE, robust retries, and synthesis. Falls back to OpenWebUI native web_search when Exa is not used.
 
 ![Architecture Diagram](https://github.com/user-attachments/assets/e79f7658-020f-4804-8d16-e4414ad781e8)
 
@@ -49,9 +49,10 @@ The suite consists of two main components:
 
 ### Prerequisites
 
-Ensure you have Docker access to your OpenWebUI instance.
+- Docker access to your OpenWebUI container
+- Optional: Exa.ai account and API key for enhanced search
 
-### Step 1: Install Dependencies
+### Step 1: Install Exa client in the container (one-time)
 
 ```bash
 docker exec -it open-webui bash
@@ -60,31 +61,30 @@ exit
 docker restart open-webui
 ```
 
-### Step 2: Add the Components
+### Step 2: Add the components
 
-1. **Install Auto Tool Selector (Function)**:
-   - Go to **Admin Settings → Functions → New Function**
-   - Copy and paste the contents of `auto_tool_selector.py`
-   - Save the function
-   - If you plan to use Jupyter Lab as the code interpreter, please download the uploader.py and place it in the home directory of Jupyter.
+1) Auto Tool Selector (Function)
+   - Admin Settings → Functions → New Function
+   - Paste the contents of `auto_tool_selector.py`
+   - Save
+   - If you plan to use Jupyter as the code interpreter, download `jupyter_uploader.py`, save it into Jupyter’s home directory as `uploader.py`, and set your OpenWebUI `BASE_URL` and `TOKEN` inside it.
 
-2. **Install Exa Search Router (Tool)** *(Optional)*:
-   - Go to **Workspace → Tools → New Tool**
-   - Copy and paste the contents of `exa_router_search.py`
-   - **Important**: Set Tool ID to `exa_router_search`
-   - Save the tool
+2) Exa Search Router (Tool) — optional but recommended
+   - Workspace → Tools → New Tool
+   - Paste the contents of `exa_router_search.py`
+   - Tool ID must be `exa_router_search`
+   - Save
 
-### Step 3: Configure Settings
+### Step 3: Configure settings in UI
 
-All configuration is now done through the UI settings - no manual file editing required!
+All configuration is done via valves in the UI—no file edits needed.
 
-1. **Enable the Function**:
-   - In your model settings, enable only the **Auto Tool Selector** function
-   - Do not enable the Exa Search Router tool directly
+1) Enable the Function in your model
+   - In the model’s Functions list, enable only Auto Tool Selector
+   - Do NOT enable the Exa tool directly; the router calls it when needed
 
-2. **Configure Your Preferences**:
-   - Access function settings through the model interface
-   - Configure API keys, models, and behavior options as needed
+2) Set preferences
+   - In the valves, configure API keys, model IDs, search depth, debug, and Jupyter usage
 
 ---
 
@@ -94,23 +94,51 @@ All configuration is now done through the UI settings - no manual file editing r
 
 | Setting | Purpose | Recommendation |
 |---------|---------|----------------|
-| `helper_model` | Decides which tool to use for queries | GPT-4o-mini, Claude-3-haiku |
-| `vision_model` | Analyzes images for non-vision models | GPT-4o, Gemini-2.0-flash |
-| `vision_injection_models` | List of non-vision models to enhance | Add your model IDs (comma-separated) |
+| `helper_model` | Decides which tool to use for queries | See model recommendations below |
+| `vision_model` | Describes images to enrich non-vision models | See model recommendations below |
+| `vision_injection_models` | Non-vision model IDs to enrich with image text | Add your model IDs (comma-separated) |
+| `history_char_limit` | Max chars per prior message in history snippet | 500 (default) |
 | `use_exa_router_search` | Enable advanced Exa search vs native search | `true` (if Exa tool is installed) |
 | `debug_enabled` | Enable detailed debug logging | `false` (enable for troubleshooting) |
-| `use_jupyter_code_interpreter` | Use Jupyter vs basic code execution | `true` (recommended) |
+| `use_jupyter_code_interpreter` | Jupyter notebook vs basic code execution | `true` (recommended) |
 
 ### Exa Search Router Settings *(If Installed)*
 
 | Setting | Purpose | Recommendation |
 |---------|---------|----------------|
-| `exa_api_key` | **Required**: Your Exa.ai API key | Get yours at [exa.ai](https://exa.ai) |
-| `router_model` | Chooses search strategy (Crawl/Standard/Complete) | GPT-4o-mini |
-| `quick_search_model` | Handles standard search operations | GPT-4o-mini |
-| `complete_agent_model` | Powers deep research analysis | GPT-4o, Claude-3-sonnet |
-| `complete_summarizer_model` | Creates final comprehensive summaries | GPT-4o, Gemini-2.0-flash |
-| `debug_enabled` | Enable search operation debugging | `false` (enable for troubleshooting) |
+| `exa_api_key` | Exa.ai API key (or set `EXA_API_KEY` env) | Required for Exa mode |
+| `router_model` | Decides CRAWL/STANDARD/COMPLETE | See model recommendations below |
+| `quick_search_model` | Refine → crawl → summarize in STANDARD | See model recommendations below |
+| `complete_agent_model` | Reasoning and planning in COMPLETE | See model recommendations below |
+| `complete_summarizer_model` | Final high‑quality synthesis in COMPLETE | See model recommendations below |
+| `quick_urls_to_search` | URLs to fetch in STANDARD | 5 (default) |
+| `quick_queries_to_crawl` | Top results to crawl in STANDARD | 3 (default) |
+| `quick_max_context_chars` | Context cap for STANDARD summarizer | 8000 (default) |
+| `complete_urls_to_search_per_query` | URLs per generated query | 5 (default) |
+| `complete_queries_to_crawl` | Top results to crawl per query | 3 (default) |
+| `complete_queries_to_generate` | New queries per iteration | 3 (default) |
+| `complete_max_search_iterations` | Iterations for COMPLETE | 2 (default) |
+| `debug_enabled` | Enable detailed debug logs | `false` (enable for troubleshooting) |
+| `show_sources` | Ask UI to display sources list | `false` (set `true` if desired) |
+
+---
+
+## Recommended Models (as of 2024‑10)
+
+Pick per role; any provider is fine if it supports your IDs. If you need fresher 2025 picks, tell me and share links you want reflected.
+
+- Helper/router (low cost, responsive):
+  - GPT‑4o‑mini, Claude 3.5 Haiku, Gemini 1.5 Flash, Llama 3.1 8B/70B Instruct (local)
+- Vision model (for image description):
+  - GPT‑4o, Gemini 1.5 Pro/Flash, Claude 3.5 Sonnet‑Vision (if available)
+- STANDARD search model (refine + summarize):
+  - GPT‑4o‑mini, Claude 3.5 Haiku, Gemini 1.5 Flash, Llama 3.1 70B (local/server)
+- COMPLETE agent model (reasoning/planning):
+  - Claude 3.5 Sonnet, GPT‑4o, Gemini 1.5 Pro, Mistral Large 2
+- COMPLETE summarizer (final synthesis, longer context helpful):
+  - Claude 3.5 Sonnet, GPT‑4o, Gemini 1.5 Pro, Llama 3.1 70B
+
+Local-friendly: Qwen2.5‑72B‑Instruct, Llama 3.1 70B, Mistral Large 2 (via API) are strong picks when budgets or privacy matter.
 
 ---
 
@@ -142,7 +170,7 @@ Non-vision models can now process images when you include them in your messages.
 ## Troubleshooting
 
 ### Enable Debug Mode
-Set `debug_enabled` to `true` in your function/tool settings to see detailed logs in your Docker container:
+Set `debug_enabled` to `true` in Auto Tool Selector and/or Exa Search Router valves to see detailed, colorized logs with metrics in your Docker container:
 
 ```bash
 docker logs open-webui -f
@@ -150,26 +178,28 @@ docker logs open-webui -f
 
 ### Common Issues
 
-**Tool not activating**: Check that only the Auto Tool Selector function is enabled in model settings, not the individual tools.
+**Tool not activating**: Ensure only Auto Tool Selector is enabled for the model. Do not enable the Exa tool directly.
 
-**Search failing**: If using Exa search, verify your API key is set correctly. The system will fall back to native search if Exa is unavailable.
+**Search failing**: If using Exa, verify `exa_py` is installed in the container and your Exa API key is set (valve or `EXA_API_KEY`). The system falls back to native `web_search` if Exa is unavailable.
 
-**Vision not working**: Ensure `vision_model` is set and your model ID is listed in `vision_injection_models`.
+
+**Concurrent search warning**: “A search is already in progress…” means a duplicate query was detected for this user; wait for completion or retry with a changed query.
 
 ---
 
 ## Update Log
 
-### Version 1.1 (Current)
-- **New**: Enhanced debugging system with color-coded logging
-- **New**: Vision model integration for non-vision models
-- **New**: Modular search architecture with native OpenWebUI fallback
-- **New**: Choice between Jupyter and basic code interpreters
-- **New**: Settings-based configuration (no more manual file management)
-- **Improved**: More robust error handling and retry mechanisms
-- **Improved**: Better status updates and user feedback
+### 1.2.5 (Current)
+- Structured debug metrics (timing, LLM calls, URL stats) with end-of-run summaries
+- Iterative COMPLETE research (objectives → reasoning → multi-queries → synthesis)
+- Robust LLM response normalization and automatic correction prompts
+- Exa search caching, chunked crawling, and safer concurrency (per-user/query locks)
+- Vision injection for non-vision models; multi-image analysis with concurrency limits
+- Code interpreter toggle (Jupyter vs basic); optional Jupyter file uploader helper
+- Clean fallback to OpenWebUI native `web_search` when Exa is disabled
+- Settings-only configuration for all behavior (no file edits)
 
-### Version 1.0
+### 1.0
 - Initial release with autonomous tool routing
 - Basic search, image generation, and code interpretation
 - Manual configuration through separate files
@@ -197,7 +227,7 @@ A: Enable debug mode and check Docker logs. You'll see detailed information abou
 - **Author**: ShaoRou459
 - **GitHub**: [OpenwebUI-Tooling-Setup](https://github.com/ShaoRou459/OpenwebUI-Tooling-Setup)
 - **Issues**: Report bugs and request features via GitHub Issues
-- **Version**: 1.1.0
+- **Version**: 1.2.5
 
 ---
 
